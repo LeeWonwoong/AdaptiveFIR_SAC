@@ -1,0 +1,47 @@
+{
+ "scenario": {
+  "type": "sustained_wind",
+  "pattern": "figure8",
+  "duration_s": 40.0,
+  "seed": 1688060240,
+  "mass": null,
+  "gusts": [],
+  "sustained": {
+   "speed": 3.0765113470399563,
+   "dir_rad": 2.829858307545725
+  },
+  "dropouts": [],
+  "heldout": false
+ },
+ "consts": {
+  "mass_nominal": 1.372,
+  "g": 9.81,
+  "dt": 0.02,
+  "Ixx": 0.02663,
+  "Iyy": 0.02663,
+  "Izz": 0.05049,
+  "anchors": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    10.0,
+    0.0,
+    3.0
+   ],
+   [
+    10.0,
+    10.0,
+    0.0
+   ],
+   [
+    0.0,
+    10.0,
+    3.0
+   ]
+  ],
+  "source": "synthetic_tier0"
+ }
+}

@@ -1,0 +1,50 @@
+{
+ "scenario": {
+  "type": "mass_step",
+  "pattern": "circle",
+  "duration_s": 40.0,
+  "seed": 1212254290,
+  "mass": {
+   "delta": 0.5311455756616992,
+   "onset_s": 21.99213835269405,
+   "impulse_z": 1.0201590612013494,
+   "impulse_xy": 0.4249466565528164,
+   "impulse_dir": 5.229242555882528
+  },
+  "gusts": [],
+  "sustained": null,
+  "dropouts": [],
+  "heldout": false
+ },
+ "consts": {
+  "mass_nominal": 1.372,
+  "g": 9.81,
+  "dt": 0.02,
+  "Ixx": 0.02663,
+  "Iyy": 0.02663,
+  "Izz": 0.05049,
+  "anchors": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    10.0,
+    0.0,
+    3.0
+   ],
+   [
+    10.0,
+    10.0,
+    0.0
+   ],
+   [
+    0.0,
+    10.0,
+    3.0
+   ]
+  ],
+  "source": "synthetic_tier0"
+ }
+}
