@@ -35,7 +35,8 @@ class SACAgent:
 
     @property
     def alpha(self):
-        return self.log_alpha.exp().detach()
+        a = self.log_alpha.exp().detach()
+        return a.clamp(min=getattr(self.cfg, "alpha_min", 0.0))
 
     @torch.no_grad()
     def act(self, obs, deterministic=False):

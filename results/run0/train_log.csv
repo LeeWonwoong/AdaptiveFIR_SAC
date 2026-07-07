@@ -1,0 +1,2 @@
+step,transitions,ep_return,rmse,mean_N,mean_lam,loss_q,loss_pi,alpha,sps
+500,8000,-12.51,0.10358,14.00,0.8497,0.1330,-4.5444,0.7685,32.6

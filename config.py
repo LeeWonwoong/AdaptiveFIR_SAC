@@ -87,7 +87,8 @@ class Config:
     #    -> essential for the anchor-dropout scenario.
     L_obs: int = 6                      # sliding-window length (steps)
     resid_clip: float = 1.0             # per-anchor residual clip [m]
-    episode_len: int = 400              # RL steps per segment (epochs; 8 s @ 50 Hz, stride=1)
+    episode_len: int = 150              # RL steps per segment (shorter -> higher disturbance
+                                        # density + more episodes before alpha settles)
     warmup_steps: int = 8               # aux-EKF-only phase, in EPOCHS (= N_min; handover: filled_valid>=N_min)
     n_envs: int = 64                    # vectorized log-replay envs
     uwb_sigma_range: tuple = (0.03, 0.10)   # per-episode measurement-noise randomization [m]
@@ -111,7 +112,9 @@ class Config:
     weight_decay: float = 0.0           # AdamW decoupled decay (0 => Adam과 동일; 필요시 1e-4)
     hidden: int = 64                    # MLP width (36-dim obs -> 64x64 sufficient)
     autotune_alpha: bool = True
-    target_entropy_scale: float = 1.0   # target_entropy = -scale * act_dim
+    target_entropy_scale: float = 0.5   # target_entropy = -scale * act_dim (0.5 keeps
+                                        # more exploration; 1.0 collapsed alpha->0 here)
+    alpha_min: float = 0.02             # floor so entropy never fully vanishes
     log_std_min: float = -5.0
     log_std_max: float = 2.0
     eval_every: int = 5_000             # vector steps

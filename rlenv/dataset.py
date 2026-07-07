@@ -57,13 +57,51 @@ class TrajDataset:
                         self.range_clean[i, k0:k1, aidx] = float("nan")
         print(f"[dataset:{split}] {self.n} trajs x {self.T} steps "
               f"({self.gt.element_size()*self.gt.nelement()/1e6:.1f} MB gt)")
+        self._build_disturb_onsets(cfg)
 
     # ── segment sampling for episodes ──
-    def sample_segments(self, M, seg_len, rng: torch.Generator):
-        """returns traj_idx [M], t0 [M] such that t0+seg_len+1 <= T."""
+    def _build_disturb_onsets(self, cfg):
+        """per-trajectory list of disturbance onset step indices (for biased
+        segment sampling so episodes actually contain the events that reward
+        adaptation)."""
+        from datagen.scenario import disturbance_intervals
+        self.onsets = []
+        for meta in self.metas:
+            sc = meta.get("scenario", {})
+            ks = [int(t0 / cfg.dt) for (t0, t1, _) in disturbance_intervals(sc)]
+            self.onsets.append(ks)
+
+    def sample_segments(self, M, seg_len, rng: torch.Generator, disturb_frac=0.7):
+        """returns traj_idx [M], t0 [M] with t0+seg_len+1 <= T.
+        A fraction `disturb_frac` of segments are ANCHORED so a disturbance
+        onset falls early in the window (the learning signal lives there;
+        purely-random segments are mostly nominal where N is irrelevant)."""
+        if not hasattr(self, "onsets"):
+            ti = torch.randint(0, self.n, (M,), generator=rng, device=self.dev)
+            t0 = torch.randint(0, self.T - seg_len - 1, (M,), generator=rng,
+                               device=self.dev)
+            return ti, t0
+        hi = self.T - seg_len - 1
         ti = torch.randint(0, self.n, (M,), generator=rng, device=self.dev)
-        t0 = torch.randint(0, self.T - seg_len - 1, (M,), generator=rng,
-                           device=self.dev)
+        t0 = torch.randint(0, hi, (M,), generator=rng, device=self.dev)
+        want = torch.rand(M, generator=rng, device=self.dev) < disturb_frac
+        for j in range(M):
+            if not want[j]:
+                continue
+            ks = self.onsets[int(ti[j])]
+            if not ks:
+                # this traj has no disturbance → repick a traj that does
+                cand = [i for i in range(self.n) if self.onsets[i]]
+                if not cand:
+                    continue
+                ti[j] = cand[int(torch.randint(0, len(cand), (1,),
+                              generator=rng, device=self.dev))]
+                ks = self.onsets[int(ti[j])]
+            k = ks[int(torch.randint(0, len(ks), (1,), generator=rng,
+                                     device=self.dev))]
+            # place onset ~1/4 into the window so pre/post are both seen
+            start = max(0, min(hi - 1, k - seg_len // 4))
+            t0[j] = start
         return ti, t0
 
     # ── batched per-step gather ──
