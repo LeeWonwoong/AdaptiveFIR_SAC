@@ -135,8 +135,18 @@ class WeightedFME:
         # ── measurement epoch ──
         C = m.jac_h(s_pred)                             # [M,4,12]
         nu = z - m.h(s_pred)                            # exact nonlinear innovation
+        # per-anchor validity: dropped anchor (scenario) arrives as NaN range;
+        # NLOS / outlier arrives as a gate-exceeding residual. Both are
+        # excluded ROW-WISE (DI-FME intermittent-dropout handling), so a single
+        # bad anchor never poisons the other three.
+        anch_ok = torch.isfinite(nu) & (nu.abs() < self.cfg.innov_gate)   # [M,4]
+        nu = torch.nan_to_num(nu, nan=0.0)
+        aw = anch_ok.float().unsqueeze(-1)              # [M,4,1]
+        C = C * aw                                      # zero dropped-anchor rows
         z_t = nu + torch.bmm(C, s_pred.unsqueeze(-1)).squeeze(-1)
-        ok = (nu[:, :self.n_rng].abs().amax(dim=1) < self.cfg.innov_gate).float()
+        z_t = z_t * anch_ok.float()                     # keep dropped rows at 0
+        # epoch counts if at least one anchor row survived (rank handled downstream)
+        ok = anch_ok.any(dim=1).float()                 # [M]
 
         # push composed slot; reset accumulators
         self.A_buf = torch.roll(self.A_buf, 1, dims=1); self.A_buf[:, 0] = self.A_acc

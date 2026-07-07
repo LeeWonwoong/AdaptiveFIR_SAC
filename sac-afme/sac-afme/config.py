@@ -77,13 +77,23 @@ class Config:
     # ══════════════════════════════════════════════════════════
     #  POMDP / log-replay environment
     # ══════════════════════════════════════════════════════════
-    L_obs: int = 10                     # innovation-norm stack length (approx. information state)
+    # ── Observation (POMDP): per-step feature o_t = [nu_1..nu_4, N_hat, lam_hat]
+    #    stacked over L steps -> obs_dim = (meas_dim + 2) * L.
+    #    nu   : per-anchor innovation (residual), clipped to [-resid_clip, +resid_clip]
+    #    N_hat: previous horizon,   min-max normalized to [-1,1]
+    #    lam_hat: previous lambda,  min-max normalized to [-1,1]  (max is 1.0)
+    #    Residual VECTOR (not scalar RMSE) so the agent distinguishes a single
+    #    anchor fault [0.4,0,0,0] from a global degradation [0.2,0.2,0.2,0.2]
+    #    -> essential for the anchor-dropout scenario.
+    L_obs: int = 6                      # sliding-window length (steps)
+    resid_clip: float = 1.0             # per-anchor residual clip [m]
     episode_len: int = 400              # RL steps per segment (epochs; 8 s @ 50 Hz, stride=1)
     warmup_steps: int = 8               # aux-EKF-only phase, in EPOCHS (= N_min; handover: filled_valid>=N_min)
     n_envs: int = 64                    # vectorized log-replay envs
     uwb_sigma_range: tuple = (0.03, 0.10)   # per-episode measurement-noise randomization [m]
-    reward_scale: float = 100.0         # = 1/sigma_e^2, sigma_e=0.1 m  (r = -scale*||e||^2, RL-AKF)
-    reward_clip: float = 100.0          # clip per-step cost (protects entropy auto-tuning)
+    # Reward: r = -||p_gt - p_hat||  (pure localization error, L2 distance),
+    # with a safety clip only (numerical guard, NOT reward engineering).
+    reward_clip: float = 10.0           # clip per-step |cost| at 10 m (protects entropy auto-tuning)
     init_pos_noise: float = 0.05        # filter init: GT + N(0, sigma)
 
     # ══════════════════════════════════════════════════════════
@@ -99,7 +109,7 @@ class Config:
     tau: float = 0.005
     lr: float = 3e-4
     weight_decay: float = 0.0           # AdamW decoupled decay (0 => Adam과 동일; 필요시 1e-4)
-    hidden: int = 128
+    hidden: int = 64                    # MLP width (36-dim obs -> 64x64 sufficient)
     autotune_alpha: bool = True
     target_entropy_scale: float = 1.0   # target_entropy = -scale * act_dim
     log_std_min: float = -5.0
@@ -112,8 +122,9 @@ class Config:
     # ══════════════════════════════════════════════════════════
     #  Scenario management (shared: synth generator & Isaac Sim datagen)
     # ══════════════════════════════════════════════════════════
-    scenario_types: tuple = ("nominal", "mass_step", "gust", "sustained_wind", "mixed")
-    scenario_probs: tuple = (0.25, 0.25, 0.25, 0.15, 0.10)
+    scenario_types: tuple = ("nominal", "mass_step", "gust", "sustained_wind",
+                             "anchor_dropout", "mixed")
+    scenario_probs: tuple = (0.22, 0.22, 0.22, 0.12, 0.12, 0.10)
     flight_patterns: tuple = ("hover", "circle", "figure8", "waypoint", "aggressive")
     traj_duration_s: float = 40.0
     # mass_step
@@ -125,6 +136,10 @@ class Config:
     gust_count_range: tuple = (1, 3)
     # sustained wind
     sustained_speed_range: tuple = (2.5, 7.0)  # m/s
+    # anchor dropout (DI-FME-style intermittent UWB loss; range stored as NaN)
+    dropout_count_range: tuple = (1, 3)        # number of dropout intervals
+    dropout_duration_range: tuple = (0.5, 3.0) # s
+    dropout_max_anchors: int = 2               # up to this many anchors drop at once
     # held-out (outside training ranges → generalization claim)
     heldout_mass_delta_range: tuple = (0.45, 0.60)
     heldout_gust_speed_range: tuple = (11.0, 14.0)
@@ -145,6 +160,10 @@ class Config:
     state_dim: int = 12
     meas_dim: int = 4
     act_dim: int = 2
+
+    @property
+    def obs_dim(self):
+        return (self.meas_dim + 2) * self.L_obs      # [nu_1..4, N_hat, lam_hat] x L
 
     def __post_init__(self):
         assert self.N_min * self.meas_dim >= self.state_dim + 2, "N_min too small for gain existence"

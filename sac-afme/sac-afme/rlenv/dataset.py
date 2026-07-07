@@ -44,6 +44,17 @@ class TrajDataset:
         # clean UWB ranges  [n,T,4]
         self.range_clean = torch.linalg.vector_norm(
             self.gt[:, :, None, 0:3] - anch[None, None], dim=3)
+        # anchor-dropout scenario: NaN out the dropped anchor(s) during their
+        # intervals (DI-FME intermittent loss). The env passes NaN through and
+        # the filter excludes that anchor row (see wfme.step).
+        dt = cfg.dt
+        for i, meta in enumerate(self.metas):
+            for dp in meta.get("scenario", {}).get("dropouts", []):
+                k0 = int(dp["start_s"] / dt)
+                k1 = min(int((dp["start_s"] + dp["duration_s"]) / dt), self.T)
+                for aidx in dp.get("anchors", []):
+                    if 0 <= aidx < self.range_clean.shape[2] and k1 > k0:
+                        self.range_clean[i, k0:k1, aidx] = float("nan")
         print(f"[dataset:{split}] {self.n} trajs x {self.T} steps "
               f"({self.gt.element_size()*self.gt.nelement()/1e6:.1f} MB gt)")
 

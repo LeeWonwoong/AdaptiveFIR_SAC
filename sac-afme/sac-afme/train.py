@@ -46,8 +46,8 @@ def main():
 
     ds = TrajDataset(cfg, "train", dev)
     env = VectorReplayEnv(cfg, ds, dev, seed=cfg.seed)
-    agent = SACAgent(cfg, obs_dim=cfg.L_obs, device=dev)
-    buf = TensorReplayBuffer(cfg.buffer_size, cfg.L_obs, cfg.act_dim, dev)
+    agent = SACAgent(cfg, obs_dim=cfg.obs_dim, device=dev)
+    buf = TensorReplayBuffer(cfg.buffer_size, cfg.obs_dim, cfg.act_dim, dev)
     gen = torch.Generator(device=dev)
     gen.manual_seed(cfg.seed + 1)
 

@@ -62,14 +62,21 @@ class Runner:
         errs = torch.zeros(M, T, device=self.dev)
         Ns = torch.zeros(M, T, device=self.dev)
         Ls = torch.zeros(M, T, device=self.dev)
-        stack = torch.zeros(M, cfg.L_obs, device=self.dev)
-        nu_mean = torch.tensor(1.0, device=self.dev)
-        nu_var = torch.tensor(1.0, device=self.dev)
-        if agent_env_stats is not None:               # reuse training normalization
-            nu_mean = agent_env_stats[0].clone()
-            nu_var = agent_env_stats[1].clone()
+        feat = cfg.meas_dim + 2
+        stack = torch.zeros(M, cfg.L_obs, feat, device=self.dev)   # [M,L,feat]
         defN = torch.full((M,), float(cfg.N_default), device=self.dev)
         defL = torch.full((M,), float(cfg.lam_default), device=self.dev)
+
+        def _nN(N):
+            return 2.0 * (N - cfg.N_min) / max(cfg.N_max - cfg.N_min, 1e-6) - 1.0
+
+        def _nL(lm):
+            return 2.0 * (lm - cfg.lam_min) / max(1.0 - cfg.lam_min, 1e-6) - 1.0
+
+        def _push(nu, N, lm):
+            r = torch.nan_to_num((nu / self.meas_sig).clamp(
+                -cfg.resid_clip, cfg.resid_clip), nan=0.0)
+            return torch.cat([r, _nN(N).unsqueeze(1), _nL(lm).unsqueeze(1)], dim=1)
         combos = None
         if oracle:
             Ng = torch.tensor([8., 12., 16., 20.], device=self.dev)
@@ -84,8 +91,7 @@ class Runner:
             is_epoch = (t % stride == 0)
             z = self.z_noisy[:, t] if is_epoch else None
             if policy is not None and is_epoch and t > warm_t:
-                std = torch.sqrt(nu_var).clamp(min=1e-3)
-                obs = (stack - nu_mean) / std
+                obs = stack.reshape(M, cfg.L_obs * feat)
                 a = policy(obs)
                 N = torch.round(0.5 * (cfg.N_max + cfg.N_min) +
                                 0.5 * (cfg.N_max - cfg.N_min) * a[:, 0]
@@ -118,11 +124,8 @@ class Runner:
                     N = getattr(flt, "last_N", defN)  # rule-based exposes its choice
                     lam = getattr(flt, "last_lam", defL)
             if nu is not None:                       # innovation exists on epochs only
-                nn = torch.linalg.vector_norm(nu / self.meas_sig, dim=1)
-                nu_mean = 0.999 * nu_mean + 0.001 * nn.mean()
-                nu_var = 0.999 * nu_var + 0.001 * (nn - nu_mean).pow(2).mean()
                 stack = torch.roll(stack, 1, dims=1)
-                stack[:, 0] = nn
+                stack[:, 0] = _push(nu, N, lam)
             errs[:, t] = torch.linalg.vector_norm(
                 ds.gt[:, t, 0:3] - s_hat[:, 0:3], dim=1)
             Ns[:, t] = N
@@ -192,7 +195,7 @@ def main():
         methods["Rule-FME"] = dict(flt=RuleFME(cfg, dev, M))
     ckpt = a.ckpt or os.path.join(cfg.outdir, "ckpt.pt")
     if os.path.exists(ckpt) and "sac" not in skip:
-        agent = SACAgent(cfg, obs_dim=cfg.L_obs, device=dev)
+        agent = SACAgent(cfg, obs_dim=cfg.obs_dim, device=dev)
         agent.load(ckpt)
         methods["SAC-AFME"] = dict(flt=WeightedFME(cfg, dev, M),
                                    policy=lambda o: agent.act(o, deterministic=True))
