@@ -6,18 +6,31 @@ IIR<FIR<AFIR + learnability decomposition (data=data_diag/train, σ_LoS=0.12, N�
 
 (2) SEGMENT RMSE [m]
   scenario         region     EKF EKF-or    UKF  FIR14 FIRbest DI-FME   AFIR
-  turbulence_burst nominal  0.080  0.082  0.085  0.182   0.163  0.165  0.133
-  anchor_dropout   nominal  0.094  0.082  0.098  0.186   0.162  0.170  0.133
-  (FIRbest = best global fixed (N,λ) for that scenario: )
+  nominal          nominal  0.084  0.079  0.084  0.192   0.169  0.175  0.138
+  turbulence_burst nominal  0.189  0.104  0.187  0.190   0.168  0.174  0.136
+                   WINDOW   0.382  0.230  0.383  0.186   0.163  0.170  0.133
+  nlos_burst       nominal  0.149  0.123  0.149  0.192   0.170  0.175  0.135
+                   WINDOW   0.700  0.721  0.700  0.779   0.760  0.764  0.629
+  anchor_dropout   nominal  0.085  0.078  0.085  0.191   0.167  0.174  0.136
+                   WINDOW   0.126  0.110  0.126  0.932   0.676  0.381  0.479
+  (FIRbest = best global fixed (N,λ) for that scenario: turbulence_burst=(20, 1.0), nlos_burst=(20, 1.0), anchor_dropout=(20, 1.0))
 
 (3) LEARNABILITY DECOMPOSITION — window RMSE [m]  (lower better)
     best-fixed = one global (N,λ);  regime-oracle = GT-label switch;  greedy = per-step
   scenario         bestfix  regime  greedy | LEARNABLE%  luck%   combos(nom→win)
+  turbulence_burst   0.163   0.163   0.133 |      -0.0%  18.6%   (20, 1.0)→(20, 1.0)  
+  nlos_burst         0.760   0.760   0.629 |       0.0%  17.2%   (20, 1.0)→(20, 1.0)  
+  anchor_dropout     0.676   0.675   0.479 |       0.0%  29.1%   (20, 1.0)→(20, 1.0)  
 
 (4) OPTIMAL N split & corr(innovation,N*)
+  turbulence_burst N_nom=15.5→N_win=15.6 (ΔN=+0.1)  multiR(ν→N*)=+0.19 corr(energy,N*)=+0.06
+  nlos_burst       N_nom=15.5→N_win=13.6 (ΔN=-1.9)  multiR(ν→N*)=+0.15 corr(energy,N*)=-0.12
+  anchor_dropout   N_nom=15.5→N_win=15.4 (ΔN=-0.1)  multiR(ν→N*)=+0.24 corr(energy,N*)=+0.06
 
 (5) VERDICT  (nominal EKF≈FIR?  window IIR<FIR<AFIR?)
-  turbulence_burst nominal EKF=0.080 vs FIR=0.165 → EKF leads
-  anchor_dropout   nominal EKF=0.094 vs FIR=0.170 → EKF leads
+  nominal          nominal EKF=0.084 vs FIR=0.175 → EKF leads
+  turbulence_burst nominal EKF=0.189 vs FIR=0.174 → TIED | window EKF=0.382>FIR=0.170>AFIR=0.133? IIR<FIR<AFIR
+  nlos_burst       nominal EKF=0.149 vs FIR=0.175 → TIED | window EKF=0.700>FIR=0.764>AFIR=0.629? EKF leads
+  anchor_dropout   nominal EKF=0.085 vs FIR=0.174 → EKF leads | window EKF=0.126>FIR=0.381>AFIR=0.479? EKF leads
 
 figures + table → results/adapt_signal/
