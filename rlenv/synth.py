@@ -88,6 +88,29 @@ def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.5):
     return p, v, np.arctan2(v[1], v[0])
 
 
+def _cm_gain(t, dyn_intervals, ramp=0.4):
+    """smooth attitude-activity gain g(t)∈[0,1]: 1 inside a dynamic segment
+    (cosine-ramped at both ends so position/attitude stay continuous), 0 in calm."""
+    for (a, b) in dyn_intervals:
+        if a <= t <= b:
+            up = 0.5 - 0.5 * np.cos(np.pi * min((t - a) / ramp, 1.0))
+            dn = 0.5 - 0.5 * np.cos(np.pi * min((b - t) / ramp, 1.0))
+            return min(up, dn)
+    return 0.0
+
+
+def _cm_ref(t, gain, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=1.0):
+    """calm = hover at c; dynamic = fast figure-8 + altitude bob, amplitude
+    scaled by `gain` → attitude activity turns on/off with the regime."""
+    osc = np.array([R0 * np.sin(w * t), 0.5 * R0 * np.sin(2 * w * t),
+                    0.4 * np.sin(0.8 * t)])
+    vosc = np.array([R0 * w * np.cos(w * t), R0 * w * np.cos(2 * w * t),
+                     0.4 * 0.8 * np.cos(0.8 * t)])
+    p = c + gain * osc
+    v = gain * vosc
+    return p, v, float(np.arctan2(v[1], v[0])) if gain > 1e-3 else 0.0
+
+
 # ─────────────────────────────── PD controller (nominal mass — no integrator)
 def _controller(s, p_ref, v_ref, yaw_ref, m_nom, J, g):
     p, v, eta, om = s[0:3], s[3:6], s[6:9], s[9:12]
@@ -119,7 +142,10 @@ def generate_traj(cfg: Config, scenario: dict, rng: np.random.Generator):
     g_vec = np.array([0, 0, -cfg.g])
     wind = WindModel(scenario, seed=scenario["seed"])
 
-    p0, _, _ = _ref(scenario["pattern"], 0.0)
+    if scenario.get("type") == "tag_commonmode":
+        p0 = np.array([5.0, 5.0, 1.5])                       # calm hover start
+    else:
+        p0, _, _ = _ref(scenario["pattern"], 0.0)
     s = np.zeros(12)
     s[0:3] = p0 + rng.normal(0, 0.05, 3)
     m_nom = cfg.mass_nominal
@@ -133,6 +159,9 @@ def generate_traj(cfg: Config, scenario: dict, rng: np.random.Generator):
     mass_onset_k = None
     if scenario.get("mass"):
         mass_onset_k = int(scenario["mass"]["onset_s"] / dt)
+    cm_dyn = [(seg["start_s"], seg["start_s"] + seg["duration_s"])
+              for seg in scenario.get("cm_regime", []) if seg.get("mode") == "dynamic"]
+    is_cm = scenario.get("type") == "tag_commonmode"
 
     for k in range(T):
         t = k * dt
@@ -142,7 +171,10 @@ def generate_traj(cfg: Config, scenario: dict, rng: np.random.Generator):
         w_vel, w_force = wind.get(t, dt)
         wind_acc = w_force / m_true
 
-        p_ref, v_ref, yaw_ref = _ref(scenario["pattern"], t)
+        if is_cm:
+            p_ref, v_ref, yaw_ref = _cm_ref(t, _cm_gain(t, cm_dyn))
+        else:
+            p_ref, v_ref, yaw_ref = _ref(scenario["pattern"], t)
         u = _controller(s, p_ref, v_ref, yaw_ref, m_nom, J, cfg.g)
 
         # turbulence burst: boost the TRUE process-noise σ during the interval

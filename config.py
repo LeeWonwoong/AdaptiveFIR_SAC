@@ -234,6 +234,33 @@ class Config:
     nlos_bias_tau: float = 0.5                 # τ NLoS [s] (0.3~0.8 s; < N·dt window → wanders)
     gm_bias_clip: float = 1.5                  # |b| clamp [m] (stay < innov_gate 2.0)
     gm_bias_seed: int = 20260708               # fixed OU draw → reproducible across tools
+    # ── TAG-SIDE COMMON-MODE bias [Phase-0 FINAL test]. Documented UWB tag
+    #    errors — DW1000 received-power-dependent timestamp shift, tag antenna
+    #    radiation-pattern range offset, tag clock drift — are COMMON to all
+    #    anchors and vary TIME-CORRELATED with the drone's attitude (antenna
+    #    orientation / RX power change as the body tilts). Unlike single-anchor
+    #    NLoS this hits every anchor at once, so it is NOT geometrically rejected
+    #    → the A-1 all-anchor-OU world, but physically grounded and spec-relevant.
+    #      range[a] += b_common(k)·s_a + b_a(k)
+    #    b_common : tag OU whose (σ_b, τ) is tied to attitude activity —
+    #      calm (hover/cruise):  quasi-static (σ_b small, τ large)
+    #      dynamic (attitude-active): fast/large (σ_b large, τ < N·dt window)
+    #    s_a : per-anchor sensitivity (antenna-pattern heterogeneity), b_a: the
+    #    per-anchor NLoS OU (kept). Regime = calm↔dynamic flight segments.
+    cm_bias: bool = True                       # enable tag-side common-mode OU
+    # cm_mode: "common"      = coherent b_common·s_a (clock/RX-power: same wander
+    #                          on every anchor → geometrically absorbed, no N-lever)
+    #          "independent" = per-anchor INDEPENDENT OU on ALL anchors in dynamic
+    #                          segments (antenna-pattern vs bearing: each anchor its
+    #                          own attitude-driven wander → A-1's per-anchor world)
+    cm_mode: str = "common"
+    cm_calm_std: float = 0.04                  # σ_b calm [m] (quasi-static)
+    cm_calm_tau: float = 3.0                   # τ calm [s]
+    cm_dyn_std: float = 0.20                   # σ_b dynamic [m] (A-1 success point)
+    cm_dyn_tau: float = 0.4                    # τ dynamic [s] (< N·dt → wanders)
+    cm_sens_range: tuple = (0.7, 1.3)          # per-anchor sensitivity s_a (antenna pattern)
+    cm_calm_dur_range: tuple = (2.5, 4.0)      # s per calm segment
+    cm_dyn_dur_range: tuple = (2.0, 3.5)       # s per dynamic segment
     # held-out (outside training ranges → generalization claim)
     heldout_mass_delta_range: tuple = (0.70, 0.90)
     heldout_gust_speed_range: tuple = (14.0, 18.0)

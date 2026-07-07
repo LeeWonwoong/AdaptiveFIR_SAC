@@ -110,10 +110,52 @@ class TrajDataset:
                 # within the window is what breaks √N averaging and gives finite N_opt.
                 std_f[i, k0:k1, a] = float(getattr(cfg, "nlos_bias_std", nb.get("bias_m", 0.0)))
                 tau_f[i, k0:k1, a] = float(getattr(cfg, "nlos_bias_tau", 1.0))
+        # [Phase-0 FINAL, cm_mode="independent"] antenna-pattern model: each anchor
+        # gets its OWN attitude-driven OU (dynamic params) in dynamic segments —
+        # the per-anchor-INDEPENDENT world that gave A-1 its finite N_opt.
+        cm_indep = (bool(getattr(cfg, "cm_bias", False))
+                    and getattr(cfg, "cm_mode", "common") == "independent")
+        if cm_indep:
+            for i, meta in enumerate(self.metas):
+                for seg in meta.get("scenario", {}).get("cm_regime", []):
+                    k0 = int(seg["start_s"] / dt)
+                    k1 = min(int((seg["start_s"] + seg["duration_s"]) / dt), self.T)
+                    if seg.get("mode") == "dynamic":
+                        std_f[i, k0:k1, :] = float(cfg.cm_dyn_std)
+                        tau_f[i, k0:k1, :] = float(cfg.cm_dyn_tau)
+                    else:
+                        std_f[i, k0:k1, :] = float(cfg.cm_calm_std)
+                        tau_f[i, k0:k1, :] = float(cfg.cm_calm_tau)
         if gm:
             rng = np.random.default_rng(int(getattr(cfg, "gm_bias_seed", 0)))
             bias = gauss_markov_bias(std_f, tau_f, dt, rng,
                                      clip=float(getattr(cfg, "gm_bias_clip", 1.5)))
+            # ── TAG-SIDE COMMON-MODE component [Phase-0 FINAL]: one OU per traj
+            #    (common to all anchors), scaled by per-anchor sensitivity s_a,
+            #    with (σ_b,τ) switched calm↔dynamic by the cm_regime segments.
+            #    range[a] += b_common(k)·s_a + b_a(k).  b_common hits every anchor
+            #    so it is NOT geometrically rejected (unlike single-anchor NLoS).
+            if (bool(getattr(cfg, "cm_bias", False))
+                    and getattr(cfg, "cm_mode", "common") == "common"
+                    and any(m.get("scenario", {}).get("cm_regime") for m in self.metas)):
+                c_std = np.full((self.n, self.T, 1), float(cfg.cm_calm_std), np.float64)
+                c_tau = np.full((self.n, self.T, 1), float(cfg.cm_calm_tau), np.float64)
+                for i, meta in enumerate(self.metas):
+                    for seg in meta.get("scenario", {}).get("cm_regime", []):
+                        if seg.get("mode") != "dynamic":
+                            continue
+                        k0 = int(seg["start_s"] / dt)
+                        k1 = min(int((seg["start_s"] + seg["duration_s"]) / dt), self.T)
+                        c_std[i, k0:k1, 0] = float(cfg.cm_dyn_std)
+                        c_tau[i, k0:k1, 0] = float(cfg.cm_dyn_tau)
+                crng = np.random.default_rng(int(getattr(cfg, "gm_bias_seed", 0)) + 991)
+                b_common = gauss_markov_bias(c_std, c_tau, dt, crng,
+                                             clip=float(getattr(cfg, "gm_bias_clip", 1.5)))  # [n,T,1]
+                lo, hi = cfg.cm_sens_range
+                s_a = crng.uniform(lo, hi, size=(self.n, 1, n_a)).astype(np.float64)
+                bias = bias + (b_common * s_a).astype(np.float32)
+                np.clip(bias, -float(getattr(cfg, "gm_bias_clip", 1.5)),
+                        float(getattr(cfg, "gm_bias_clip", 1.5)), out=bias)
             self.range_bias = torch.tensor(bias, device=device)
         else:
             # legacy path: within-burst constant multipath bias

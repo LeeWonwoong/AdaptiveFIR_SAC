@@ -20,7 +20,7 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
     sc = {"type": str(stype), "pattern": str(pattern), "duration_s": dur,
           "seed": int(rng.integers(0, 2 ** 31 - 1)),
           "mass": None, "gusts": [], "sustained": None, "dropouts": [],
-          "nlos_burst": [], "turbulence": [],
+          "nlos_burst": [], "turbulence": [], "cm_regime": [],
           "heldout": bool(heldout)}
 
     mass_rng = cfg.heldout_mass_delta_range if heldout else cfg.mass_delta_range
@@ -85,6 +85,21 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
             t0 = start + d + 0.8
         return out
 
+    def _cm_regime():
+        """alternating calm↔dynamic flight segments (start calm). Dynamic
+        segments = attitude-active maneuvering → the tag-side common-mode bias
+        switches to its fast/large OU regime there. Recorded so the measurement
+        layer (dataset) and the trajectory generator (synth) both read them."""
+        segs, t, mode = [], 0.0, "calm"
+        while t < dur - 0.5:
+            lo, hi = (cfg.cm_calm_dur_range if mode == "calm"
+                      else cfg.cm_dyn_dur_range)
+            d = min(float(rng.uniform(lo, hi)), dur - t)
+            segs.append({"start_s": float(t), "duration_s": float(d), "mode": mode})
+            t += d
+            mode = "dynamic" if mode == "calm" else "calm"
+        return segs
+
     def _gusts():
         n = int(rng.integers(cfg.gust_count_range[0], cfg.gust_count_range[1] + 1))
         out, t0 = [], 0.15 * dur
@@ -110,6 +125,8 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
         sc["nlos_burst"] = _nlos_burst()
     elif stype == "turbulence_burst":
         sc["turbulence"] = _turbulence()
+    elif stype == "tag_commonmode":
+        sc["cm_regime"] = _cm_regime()
     elif stype == "mixed":
         sc["mass"] = _mass()
         sc["gusts"] = _gusts()
@@ -133,4 +150,8 @@ def disturbance_intervals(sc: dict):
         out.append((nb["start_s"], nb["start_s"] + nb["duration_s"], "nlos_burst"))
     for tb in sc.get("turbulence", []):
         out.append((tb["start_s"], tb["start_s"] + tb["duration_s"], "turbulence_burst"))
+    for seg in sc.get("cm_regime", []):
+        if seg.get("mode") == "dynamic":
+            out.append((seg["start_s"], seg["start_s"] + seg["duration_s"],
+                        "tag_commonmode"))
     return out

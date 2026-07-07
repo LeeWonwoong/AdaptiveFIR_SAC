@@ -1,0 +1,118 @@
+{
+ "scenario": {
+  "type": "tag_commonmode",
+  "pattern": "circle",
+  "duration_s": 40.0,
+  "seed": 2077711328,
+  "mass": null,
+  "gusts": [],
+  "sustained": null,
+  "dropouts": [],
+  "nlos_burst": [],
+  "turbulence": [],
+  "cm_regime": [
+   {
+    "start_s": 0.0,
+    "duration_s": 2.988738037207228,
+    "mode": "calm"
+   },
+   {
+    "start_s": 2.988738037207228,
+    "duration_s": 2.555689559052303,
+    "mode": "dynamic"
+   },
+   {
+    "start_s": 5.544427596259531,
+    "duration_s": 3.2043337169137116,
+    "mode": "calm"
+   },
+   {
+    "start_s": 8.748761313173244,
+    "duration_s": 2.2842070386264286,
+    "mode": "dynamic"
+   },
+   {
+    "start_s": 11.032968351799672,
+    "duration_s": 2.6948822580032075,
+    "mode": "calm"
+   },
+   {
+    "start_s": 13.72785060980288,
+    "duration_s": 2.7135573893389004,
+    "mode": "dynamic"
+   },
+   {
+    "start_s": 16.44140799914178,
+    "duration_s": 2.8403640235763263,
+    "mode": "calm"
+   },
+   {
+    "start_s": 19.28177202271811,
+    "duration_s": 3.0047209920237656,
+    "mode": "dynamic"
+   },
+   {
+    "start_s": 22.286493014741875,
+    "duration_s": 3.155727878308496,
+    "mode": "calm"
+   },
+   {
+    "start_s": 25.442220893050372,
+    "duration_s": 3.249017294086756,
+    "mode": "dynamic"
+   },
+   {
+    "start_s": 28.691238187137127,
+    "duration_s": 3.5503976530033734,
+    "mode": "calm"
+   },
+   {
+    "start_s": 32.2416358401405,
+    "duration_s": 2.4685499620730615,
+    "mode": "dynamic"
+   },
+   {
+    "start_s": 34.710185802213566,
+    "duration_s": 3.7483897020928016,
+    "mode": "calm"
+   },
+   {
+    "start_s": 38.45857550430637,
+    "duration_s": 1.541424495693633,
+    "mode": "dynamic"
+   }
+  ],
+  "heldout": false
+ },
+ "consts": {
+  "mass_nominal": 1.372,
+  "g": 9.81,
+  "dt": 0.02,
+  "Ixx": 0.02663,
+  "Iyy": 0.02663,
+  "Izz": 0.05049,
+  "anchors": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    10.0,
+    0.0,
+    3.0
+   ],
+   [
+    10.0,
+    10.0,
+    0.0
+   ],
+   [
+    0.0,
+    10.0,
+    3.0
+   ]
+  ],
+  "source": "synthetic_tier0"
+ }
+}
