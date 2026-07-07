@@ -1,0 +1,4 @@
+torch>=2.1
+numpy>=1.24
+matplotlib>=3.7
+# datagen(Isaac Sim 측)은 별도 환경: pegasus-simulator, px4_msgs, rclpy, scipy
