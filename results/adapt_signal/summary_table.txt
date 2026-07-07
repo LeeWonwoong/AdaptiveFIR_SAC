@@ -1,0 +1,23 @@
+
+==================================================================================
+IIR<FIR<AFIR + learnability decomposition (data=data_diag/train, σ_LoS=0.12, N∈[8,20])
+  EKF/UKF = practitioner (R σ=0.10, Q×0.40);  EKF-or = oracle stats
+==================================================================================
+
+(2) SEGMENT RMSE [m]
+  scenario         region     EKF EKF-or    UKF  FIR14 FIRbest DI-FME   AFIR
+  turbulence_burst nominal  0.080  0.082  0.085  0.182   0.163  0.165  0.133
+  anchor_dropout   nominal  0.094  0.082  0.098  0.186   0.162  0.170  0.133
+  (FIRbest = best global fixed (N,λ) for that scenario: )
+
+(3) LEARNABILITY DECOMPOSITION — window RMSE [m]  (lower better)
+    best-fixed = one global (N,λ);  regime-oracle = GT-label switch;  greedy = per-step
+  scenario         bestfix  regime  greedy | LEARNABLE%  luck%   combos(nom→win)
+
+(4) OPTIMAL N split & corr(innovation,N*)
+
+(5) VERDICT  (nominal EKF≈FIR?  window IIR<FIR<AFIR?)
+  turbulence_burst nominal EKF=0.080 vs FIR=0.165 → EKF leads
+  anchor_dropout   nominal EKF=0.094 vs FIR=0.170 → EKF leads
+
+figures + table → results/adapt_signal/

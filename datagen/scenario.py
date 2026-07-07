@@ -20,10 +20,12 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
     sc = {"type": str(stype), "pattern": str(pattern), "duration_s": dur,
           "seed": int(rng.integers(0, 2 ** 31 - 1)),
           "mass": None, "gusts": [], "sustained": None, "dropouts": [],
+          "nlos_burst": [], "turbulence": [],
           "heldout": bool(heldout)}
 
     mass_rng = cfg.heldout_mass_delta_range if heldout else cfg.mass_delta_range
     gust_rng = cfg.heldout_gust_speed_range if heldout else cfg.gust_speed_range
+    nlos_bias_rng = cfg.heldout_nlos_bias_range if heldout else cfg.nlos_bias_range
 
     def _mass():
         return {"delta": float(rng.uniform(*mass_rng)),
@@ -47,6 +49,42 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
             t0 = start + d + 1.0
         return out
 
+    def _turbulence():
+        """반복 난류: 2~4 intervals where the plant process-noise σ is boosted
+        ×3~5 (the synth reads scenario['turbulence'] in its rollout)."""
+        n = int(rng.integers(cfg.turb_count_range[0], cfg.turb_count_range[1] + 1))
+        out, t0 = [], 0.12 * dur
+        for _ in range(n):
+            d = float(rng.uniform(*cfg.turb_duration_range))
+            hi = 0.90 * dur - d
+            if t0 > hi:
+                break
+            start = float(rng.uniform(t0, max(t0 + 0.1, hi)))
+            out.append({"start_s": start, "duration_s": d,
+                        "boost": float(rng.uniform(*cfg.turb_boost_range))})
+            t0 = start + d + 1.0
+        return out
+
+    def _nlos_burst():
+        """NLoS burst: one anchor's σ jumps LoS→NLoS with a positive multipath
+        bias, intermittently for 2~4 s. Per-anchor (σ, bias) applied by the
+        dataset noise model — the filters keep believing R=LoS."""
+        n = int(rng.integers(cfg.nlos_count_range[0], cfg.nlos_count_range[1] + 1))
+        n_anch = len(cfg.anchors)
+        out, t0 = [], 0.12 * dur
+        for _ in range(n):
+            d = float(rng.uniform(*cfg.nlos_duration_range))
+            hi = 0.90 * dur - d
+            if t0 > hi:
+                break
+            start = float(rng.uniform(t0, max(t0 + 0.1, hi)))
+            out.append({"anchor": int(rng.integers(0, n_anch)),
+                        "start_s": start, "duration_s": d,
+                        "sigma": float(cfg.nlos_sigma),
+                        "bias_m": float(rng.uniform(*nlos_bias_rng))})
+            t0 = start + d + 0.8
+        return out
+
     def _gusts():
         n = int(rng.integers(cfg.gust_count_range[0], cfg.gust_count_range[1] + 1))
         out, t0 = [], 0.15 * dur
@@ -68,6 +106,10 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
                            "dir_rad": float(rng.uniform(0, 2 * np.pi))}
     elif stype == "anchor_dropout":
         sc["dropouts"] = _dropouts()
+    elif stype == "nlos_burst":
+        sc["nlos_burst"] = _nlos_burst()
+    elif stype == "turbulence_burst":
+        sc["turbulence"] = _turbulence()
     elif stype == "mixed":
         sc["mass"] = _mass()
         sc["gusts"] = _gusts()
@@ -87,4 +129,8 @@ def disturbance_intervals(sc: dict):
         out.append((0.0, sc["duration_s"], "sustained_wind"))
     for dp in sc.get("dropouts", []):
         out.append((dp["start_s"], dp["start_s"] + dp["duration_s"], "anchor_dropout"))
+    for nb in sc.get("nlos_burst", []):
+        out.append((nb["start_s"], nb["start_s"] + nb["duration_s"], "nlos_burst"))
+    for tb in sc.get("turbulence", []):
+        out.append((tb["start_s"], tb["start_s"] + tb["duration_s"], "turbulence_burst"))
     return out

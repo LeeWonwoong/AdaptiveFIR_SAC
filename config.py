@@ -36,6 +36,28 @@ class Config:
     Ixx: float = 0.02663
     Iyy: float = 0.02663
     Izz: float = 0.05049
+    # PLANT process noise (the TRUE stochastic forcing the synth injects each
+    # substep). CALIBRATED so nominal Greedy N_opt median ≈ 14 at σ_meas=0.12 —
+    # i.e. the finite-horizon-optimal world of Shmaliy (a real system's process
+    # is NOT deterministic, so full-horizon averaging is sub-optimal). The
+    # model-based filters (EKF/UKF Q) BELIEVE this nominal value and never learn
+    # the turbulence boost — the honest limit of a fixed-Q KF.
+    # NOTE: the N_opt≈14 calibration target is UNREACHABLE here — N_opt is
+    # floored ~16 by range-measurement nonlinearity over the maneuver (position
+    # is the double-integral of the accel noise AND is directly observed by UWB,
+    # so process noise perturbs weakly-observed velocity, not the position N_opt).
+    # These values are the DEMONSTRATION operating point that makes the fixed-Q
+    # EKF lag under turbulence while nominal stays sane.
+    proc_acc_std: float = 1.50          # m/s^2  (nominal plant accel process noise)
+    proc_gyro_std: float = 0.45         # rad/s^2 (angular process noise)
+    # PRACTITIONER mis-tuning of the recursive baselines (Shmaliy: a real KF
+    # user does NOT know the true noise statistics — KF only leads for β∈
+    # [0.7,1.6]). The default EKF/UKF use a datasheet R (UNDER-states σ) and a Q
+    # that UNDER-states the process noise (never anticipates turbulence). The
+    # oracle-KF (correct R=meas_sigma, correct Q=q0) is reported alongside as
+    # the honest upper bound.
+    ekf_R_sigma: float = 0.10           # practitioner datasheet σ [m] (< true 0.12~0.45)
+    ekf_Q_scale: float = 0.40           # practitioner process-σ = ekf_Q_scale * q0 (~q0/2.5)
     # UWB anchors (DI-FME layout scaled to workspace)  [4,3]
     anchors: tuple = ((0.0, 0.0, 0.0), (10.0, 0.0, 3.0),
                       (10.0, 10.0, 0.0), (0.0, 10.0, 3.0))
@@ -45,13 +67,19 @@ class Config:
     # position xyz — localization. The weakly observable (v,eta,omega) blocks
     # of the LS solution are internal byproducts, never delivered and (with
     # self_anchor=False) never fed back into the linearization.
-    meas_sigma: tuple = (0.05, 0.05, 0.05, 0.05)       # UWB [m] (nominal; per-episode randomized)
+    # UWB LoS σ realised at INFME level (R≈0.014 m²; NLoS bursts raise it to
+    # R≈0.2 m² per anchor, INFME-adjacent). This is the FIXED noise statistic
+    # every model-based filter (FME whitening, EKF/UKF R) BELIEVES — it does NOT
+    # know the NLoS σ jump, which is the whole point of [수정C].
+    meas_sigma: tuple = (0.12, 0.12, 0.12, 0.12)       # UWB LoS [m] (nominal; per-episode randomized)
 
     # ══════════════════════════════════════════════════════════
     #  Weighted FME (filter)
     # ══════════════════════════════════════════════════════════
     N_min: int = 8                      # >= dim(s)/meas-rank margin (TITS'25 convention)
-    N_max: int = 20                     # ring-buffer length W (fixed shape)
+    N_max: int = 20                     # ring-buffer length W (fixed shape). At the
+                                        # CALIBRATED process noise q0 the nominal N_opt≈14
+                                        # (DI-FME choice) sits mid-range → real headroom.
     lam_min: float = 0.7                # Omega > 0 (unbiasedness Lemma premise)
     ridge_eps: float = 1e-8             # RELATIVE Tikhonov rows (numerical rank safety ONLY; bias ~1e-8)
     # PURE FME: no prior/regularization toward any prediction. The weak-
@@ -91,7 +119,7 @@ class Config:
                                         # density + more episodes before alpha settles)
     warmup_steps: int = 8               # aux-EKF-only phase, in EPOCHS (= N_min; handover: filled_valid>=N_min)
     n_envs: int = 64                    # vectorized log-replay envs
-    uwb_sigma_range: tuple = (0.03, 0.10)   # per-episode measurement-noise randomization [m]
+    uwb_sigma_range: tuple = (0.08, 0.16)   # per-episode LoS σ randomization [m] (brackets 0.12)
     # Reward: r = -||p_gt - p_hat||  (pure localization error, L2 distance),
     # with a safety clip only (numerical guard, NOT reward engineering).
     reward_clip: float = 10.0           # clip per-step |cost| at 10 m (protects entropy auto-tuning)
@@ -125,9 +153,16 @@ class Config:
     # ══════════════════════════════════════════════════════════
     #  Scenario management (shared: synth generator & Isaac Sim datagen)
     # ══════════════════════════════════════════════════════════
-    scenario_types: tuple = ("nominal", "mass_step", "gust", "sustained_wind",
-                             "anchor_dropout", "mixed")
-    scenario_probs: tuple = (0.22, 0.22, 0.22, 0.12, 0.12, 0.10)
+    # FOCUSED SET for the IIR<FIR<AFIR study (DI-FME Table I pattern: nominal
+    # ≈-tied, disturbance windows FIR≫IIR & AFIR≫FIR). The lever is MEASUREMENT-
+    # side (established: plant kicks barely dent UWB localization):
+    #   nominal          LoS σ, no fault          → IIR≈FIR at N_opt (Shmaliy)
+    #   turbulence_burst process-noise q×3~5, 2~5s → EKF (fixed Q) LAGS (main)
+    #   nlos_burst       one anchor σ↑ + bias 2~4s → EKF over-trusts (main)
+    #   anchor_dropout   one anchor out 3~5 s      → geometry loss (FIR tier=DI-FME)
+    scenario_types: tuple = ("nominal", "turbulence_burst",
+                             "nlos_burst", "anchor_dropout")
+    scenario_probs: tuple = (0.15, 0.35, 0.25, 0.25)
     # flight patterns (NO 'aggressive': high-G maneuvers break the 1st-order
     # Taylor linearization the FIR relies on — out of scope by design).
     flight_patterns: tuple = ("hover", "circle", "figure8", "waypoint")
@@ -153,12 +188,38 @@ class Config:
     # DI-FME intermittent). One anchor lost -> GDOP worsens (3-anchor GDOP up
     # to ~11 near workspace edges); large N holds the pre-dropout 4-anchor data
     # to ride it out. This is the clearest (N,lambda) benefit case.
+    # ── TURBULENCE BURST (주력): the plant's process noise q is boosted ×3~5
+    #    for 2~5 s, 2~4 times. The TRUE trajectory becomes erratic; a fixed-Q
+    #    EKF/UKF (believes nominal q0) UNDER-weights measurements → lags; the FIR
+    #    ignores noise statistics → stays robust; AFIR sees innovation variance
+    #    rise and SHORTENS N. This is the Shmaliy FIR>KF mechanism (process-side,
+    #    accumulates in the recursive filter). Amplitude bounded → Taylor valid.
+    turb_count_range: tuple = (2, 4)
+    turb_duration_range: tuple = (2.0, 5.0)    # s per turbulence burst
+    turb_boost_range: tuple = (5.0, 8.0)       # σ multiplier (eff 7.5~12 m/s²): below
+                                               # ~7 the EKF still tracks (position is
+                                               # UWB-observed) → no IIR<FIR separation
+    # ── ANCHOR DROPOUT (주력): one anchor fully lost 3~5 s (range→NaN). EKF/UKF
+    #    do prediction-only on the missing rows ([수정B]) → the WRONG nominal
+    #    model integrates unchecked → honest divergence; FME excludes the row
+    #    and the surviving 3-anchor window still localizes (large N holds the
+    #    pre-dropout 4-anchor epochs).
     dropout_count_range: tuple = (1, 2)
     dropout_duration_range: tuple = (3.0, 5.0) # s (prolonged but bounded)
-    dropout_max_anchors: int = 1               # one anchor fully lost (NLOS-like)
+    dropout_max_anchors: int = 1               # one anchor fully lost (NLoS-like)
+    # ── NLoS BURST (주력): one anchor's σ jumps LoS(0.12)→NLoS(0.45, R≈0.2 m²)
+    #    with a positive multipath bias, intermittently for 2~4 s. The model-
+    #    based filters keep believing R=LoS → EKF OVER-TRUSTS the corrupted
+    #    anchor and its error amplifies; FME's bounded batch-LS limits the
+    #    damage and AFIR can down-weight (λ, or drop N).
+    nlos_count_range: tuple = (2, 4)
+    nlos_duration_range: tuple = (2.0, 4.0)    # s per NLoS burst
+    nlos_sigma: float = 0.45                   # NLoS σ [m] (R≈0.20 m², INFME-adjacent)
+    nlos_bias_range: tuple = (0.3, 0.5)        # m positive multipath bias (< innov_gate 2.0)
     # held-out (outside training ranges → generalization claim)
     heldout_mass_delta_range: tuple = (0.70, 0.90)
     heldout_gust_speed_range: tuple = (14.0, 18.0)
+    heldout_nlos_bias_range: tuple = (0.5, 0.7)  # stronger NLoS bias (still < gate)
     # dataset sizes
     n_train_traj: int = 200
     n_heldout_traj: int = 50

@@ -48,7 +48,9 @@ class Runner:
         n_rng = 4
         n_rng = ds.range_clean.shape[2]
         # pre-draw the ENTIRE noise tensor once → identical for every method
-        z_rng = ds.range_clean + sig_u * torch.randn(
+        nscale = ds.noise_scale if hasattr(ds, "noise_scale") else 1.0    # [M,T,4]
+        rbias = ds.range_bias if hasattr(ds, "range_bias") else 0.0       # [M,T,4]
+        z_rng = ds.range_clean + rbias + sig_u * nscale * torch.randn(
             self.M, ds.T, n_rng, generator=g, device=device)
         self.z_noisy = z_rng
         self.meas_sig = ms

@@ -76,8 +76,14 @@ class VectorReplayEnv:
         is NaN, so the measurement row is NaN -> the filter's innovation gate
         excludes it (as in DI-FME's intermittent-dropout handling)."""
         _, rc, _, _ = self.ds.get(self.ti, self.t)
-        return rc + self.sigma * torch.randn(self.M, rc.shape[1],
-                                             generator=self.rng, device=self.dev)
+        scale = 1.0
+        bias = 0.0
+        if hasattr(self.ds, "noise_scale"):                 # NLoS per-anchor σ↑
+            scale = self.ds.noise_scale[self.ti, self.t]    # [M,4]
+        if hasattr(self.ds, "range_bias"):                  # NLoS multipath bias
+            bias = self.ds.range_bias[self.ti, self.t]      # [M,4]
+        return rc + bias + self.sigma * scale * torch.randn(
+            self.M, rc.shape[1], generator=self.rng, device=self.dev)
 
     def _epoch(self, N, lam):
         stride = max(1, self.cfg.uwb_stride)

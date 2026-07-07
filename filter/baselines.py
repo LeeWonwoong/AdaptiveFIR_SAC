@@ -23,17 +23,40 @@ from .uav_model import UAVModel
 from .wfme import WeightedFME
 
 
+def proc_Q(cfg, acc=None, gyro=None):
+    """Discrete process covariance from a plant accel/gyro σ. Per-epoch velocity
+    variance from an accel white sequence over the dt/4 substeps ≈ σ_a² dt²/4.
+    acc/gyro default to the TRUE nominal (config.proc_acc_std/proc_gyro_std);
+    the practitioner KF passes UNDER-stated values."""
+    dt = cfg.dt
+    a = getattr(cfg, "proc_acc_std", 0.30) if acc is None else acc
+    gg = getattr(cfg, "proc_gyro_std", 0.05) if gyro is None else gyro
+    qa = (a ** 2) * dt * dt / 4.0
+    qg = (gg ** 2) * dt * dt / 4.0
+    return [1e-7] * 3 + [qa] * 3 + [1e-6] * 3 + [qg] * 3
+
+
+def _kf_stats(cfg, oracle):
+    """(q_diag, r_sigma) for a recursive baseline. oracle → correct statistics
+    (Q from true q0, R from meas_sigma); else PRACTITIONER (Q under-scaled by
+    ekf_Q_scale, R from the datasheet ekf_R_sigma)."""
+    if oracle:
+        return proc_Q(cfg), list(getattr(cfg, "meas_sigma", (0.12,) * cfg.meas_dim))
+    sc = getattr(cfg, "ekf_Q_scale", 0.40)
+    q = proc_Q(cfg, acc=cfg.proc_acc_std * sc, gyro=cfg.proc_gyro_std * sc)
+    return q, [getattr(cfg, "ekf_R_sigma", 0.10)] * cfg.meas_dim
+
+
 # ══════════════════════════════════════════════════════════════ EKF
 class EKF:
-    def __init__(self, cfg, device, M, q_diag=None, r_diag=None):
+    def __init__(self, cfg, device, M, q_diag=None, r_diag=None, oracle=False):
         self.cfg, self.dev, self.M = cfg, device, M
         self.model = UAVModel(cfg, device)
         nx = cfg.state_dim
-        q = q_diag if q_diag is not None else \
-            [1e-6] * 3 + [5e-4] * 3 + [1e-5] * 3 + [5e-4] * 3
+        q0, r0 = _kf_stats(cfg, oracle)
+        q = q_diag if q_diag is not None else q0
         self.Q = torch.diag(torch.tensor(q, device=device))
-        sig = r_diag if r_diag is not None else list(
-            getattr(cfg, "meas_sigma", (0.05,) * cfg.meas_dim))
+        sig = r_diag if r_diag is not None else r0
         self.R = torch.diag(torch.tensor(sig, device=device) ** 2)
         self.eye = torch.eye(nx, device=device)
         self.s = torch.zeros(M, nx, device=device)
@@ -54,6 +77,15 @@ class EKF:
             return self.s, None, s_pred
         C = m.jac_h(s_pred)
         nu = z - m.h(s_pred)
+        # [수정B] per-anchor dropout: a missing anchor arrives as NaN range.
+        # Zero its measurement row → that channel does prediction-only (no NaN
+        # poisoning). ALL anchors missing → C=0 → K=0 → pure time update, so the
+        # WRONG nominal model integrates unchecked (honest divergence). NOTE the
+        # EKF keeps its FIXED R (=LoS σ, [수정C]): on an NLoS burst nu is finite
+        # so the corrupted anchor is FULLY trusted → error amplifies.
+        valid = torch.isfinite(nu)                       # [M,4]
+        nu = torch.nan_to_num(nu, nan=0.0)
+        C = C * valid.float().unsqueeze(-1)              # drop missing rows
         S = torch.bmm(torch.bmm(C, self.P), C.transpose(1, 2)) + self.R
         K = torch.bmm(self.P, torch.linalg.solve(S, C).transpose(1, 2))
         self.s = s_pred + torch.bmm(K, nu.unsqueeze(-1)).squeeze(-1)
@@ -64,16 +96,15 @@ class EKF:
 # ══════════════════════════════════════════════════════════════ UKF
 class UKF:
     def __init__(self, cfg, device, M, q_diag=None, r_diag=None,
-                 alpha=0.5, beta=2.0, kappa=0.0):
+                 alpha=0.5, beta=2.0, kappa=0.0, oracle=False):
         self.cfg, self.dev, self.M = cfg, device, M
         self.model = UAVModel(cfg, device)
         nx, nz = cfg.state_dim, cfg.meas_dim
         self.nx, self.nz = nx, nz
-        q = q_diag if q_diag is not None else \
-            [1e-6] * 3 + [5e-4] * 3 + [1e-5] * 3 + [5e-4] * 3
+        q0, r0 = _kf_stats(cfg, oracle)
+        q = q_diag if q_diag is not None else q0
         self.Q = torch.diag(torch.tensor(q, device=device))
-        sig = r_diag if r_diag is not None else list(
-            getattr(cfg, "meas_sigma", (0.05,) * nz))
+        sig = r_diag if r_diag is not None else r0
         self.R = torch.diag(torch.tensor(sig, device=device) ** 2)
         lam = alpha ** 2 * (nx + kappa) - nx
         self.lam = lam
@@ -117,10 +148,16 @@ class UKF:
         Zf = m.h(Xf.reshape(-1, nx)).reshape(M, self.ns, nz)
         z_pred = (self.Wm.view(1, -1, 1) * Zf).sum(1)
         dZ = Zf - z_pred.unsqueeze(1)
+        # [수정B] per-anchor dropout: zero the missing channels' innovation
+        # deviations → they contribute only R to Pzz (invertible) and 0 to Pxz,
+        # so K has no column there and nu is 0 → prediction-only on missing
+        # channels (all missing → K=0 → pure time update).
+        valid = torch.isfinite(z)                        # [M,nz]
+        dZ = dZ * valid.float().unsqueeze(1)             # zero missing-channel devs
+        nu = torch.nan_to_num(z - z_pred, nan=0.0)
         Pzz = torch.einsum("s,msi,msj->mij", self.Wc, dZ, dZ) + self.R
         Pxz = torch.einsum("s,msi,msj->mij", self.Wc, dX, dZ)
         K = torch.linalg.solve(Pzz, Pxz.transpose(1, 2)).transpose(1, 2)
-        nu = z - z_pred
         self.s = s_pred + torch.bmm(K, nu.unsqueeze(-1)).squeeze(-1)
         self.P = P_pred - torch.bmm(torch.bmm(K, Pzz), K.transpose(1, 2))
         return self.s, nu, s_pred

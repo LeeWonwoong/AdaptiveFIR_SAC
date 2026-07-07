@@ -145,6 +145,15 @@ def generate_traj(cfg: Config, scenario: dict, rng: np.random.Generator):
         p_ref, v_ref, yaw_ref = _ref(scenario["pattern"], t)
         u = _controller(s, p_ref, v_ref, yaw_ref, m_nom, J, cfg.g)
 
+        # turbulence burst: boost the TRUE process-noise σ during the interval
+        # (the filters keep believing nominal q0 → fixed-Q KF lags).
+        q_boost = 1.0
+        for tb in scenario.get("turbulence", []):
+            if tb["start_s"] <= t <= tb["start_s"] + tb["duration_s"]:
+                q_boost = max(q_boost, tb["boost"])
+        acc_std = cfg.proc_acc_std * q_boost
+        gyro_std = cfg.proc_gyro_std * q_boost
+
         # payload-coupling instant: inject a velocity impulse (z-sink + lateral),
         # exactly the UIFM-SLAC Scenario-2 signature (sudden CoG change).
         if mass_onset_k is not None and k == mass_onset_k:
@@ -158,7 +167,8 @@ def generate_traj(cfg: Config, scenario: dict, rng: np.random.Generator):
         t_arr[k], u_arr[k], gt[k], mt[k], wv[k] = t, u, s, m_true, w_vel
 
         for _ in range(sub):
-            wn = np.concatenate([rng.normal(0, 0.03, 3), rng.normal(0, 0.02, 3)])
+            wn = np.concatenate([rng.normal(0, acc_std, 3),
+                                 rng.normal(0, gyro_std, 3)])
             s = _plant_step(s, u, dti, m_true, J, g_vec, wind_acc, wn)
         s[6:8] = np.clip(s[6:8], -1.1, 1.1)
 

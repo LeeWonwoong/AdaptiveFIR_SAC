@@ -1,0 +1,57 @@
+{
+ "scenario": {
+  "type": "gust",
+  "pattern": "circle",
+  "duration_s": 40.0,
+  "seed": 949862354,
+  "mass": null,
+  "gusts": [
+   {
+    "speed": 8.663530465976663,
+    "dir_rad": 6.264553512873865,
+    "start_s": 27.432944915053454,
+    "duration_s": 0.5673767582062217
+   },
+   {
+    "speed": 13.02137947796563,
+    "dir_rad": 0.6686536390512026,
+    "start_s": 30.26314592706591,
+    "duration_s": 0.551680009723098
+   }
+  ],
+  "sustained": null,
+  "dropouts": [],
+  "heldout": false
+ },
+ "consts": {
+  "mass_nominal": 1.372,
+  "g": 9.81,
+  "dt": 0.02,
+  "Ixx": 0.02663,
+  "Iyy": 0.02663,
+  "Izz": 0.05049,
+  "anchors": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    10.0,
+    0.0,
+    3.0
+   ],
+   [
+    10.0,
+    10.0,
+    0.0
+   ],
+   [
+    0.0,
+    10.0,
+    3.0
+   ]
+  ],
+  "source": "synthetic_tier0"
+ }
+}

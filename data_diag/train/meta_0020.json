@@ -1,0 +1,61 @@
+{
+ "scenario": {
+  "type": "nlos_burst",
+  "pattern": "figure8",
+  "duration_s": 40.0,
+  "seed": 796549538,
+  "mass": null,
+  "gusts": [],
+  "sustained": null,
+  "dropouts": [],
+  "nlos_burst": [
+   {
+    "anchor": 3,
+    "start_s": 13.547799716477684,
+    "duration_s": 3.6165029441286034,
+    "sigma": 0.45,
+    "bias_m": 0.490579879013949
+   },
+   {
+    "anchor": 3,
+    "start_s": 25.923924284353568,
+    "duration_s": 2.581835676280237,
+    "sigma": 0.45,
+    "bias_m": 0.48720871400979265
+   }
+  ],
+  "turbulence": [],
+  "heldout": false
+ },
+ "consts": {
+  "mass_nominal": 1.372,
+  "g": 9.81,
+  "dt": 0.02,
+  "Ixx": 0.02663,
+  "Iyy": 0.02663,
+  "Izz": 0.05049,
+  "anchors": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    10.0,
+    0.0,
+    3.0
+   ],
+   [
+    10.0,
+    10.0,
+    0.0
+   ],
+   [
+    0.0,
+    10.0,
+    3.0
+   ]
+  ],
+  "source": "synthetic_tier0"
+ }
+}

@@ -1,0 +1,59 @@
+{
+ "scenario": {
+  "type": "anchor_dropout",
+  "pattern": "hover",
+  "duration_s": 40.0,
+  "seed": 2112114972,
+  "mass": null,
+  "gusts": [],
+  "sustained": null,
+  "dropouts": [
+   {
+    "anchors": [
+     3
+    ],
+    "start_s": 17.54568812341383,
+    "duration_s": 3.424294815046603
+   },
+   {
+    "anchors": [
+     2
+    ],
+    "start_s": 24.726941444611043,
+    "duration_s": 4.756731467621603
+   }
+  ],
+  "heldout": false
+ },
+ "consts": {
+  "mass_nominal": 1.372,
+  "g": 9.81,
+  "dt": 0.02,
+  "Ixx": 0.02663,
+  "Iyy": 0.02663,
+  "Izz": 0.05049,
+  "anchors": [
+   [
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    10.0,
+    0.0,
+    3.0
+   ],
+   [
+    10.0,
+    10.0,
+    0.0
+   ],
+   [
+    0.0,
+    10.0,
+    3.0
+   ]
+  ],
+  "source": "synthetic_tier0"
+ }
+}

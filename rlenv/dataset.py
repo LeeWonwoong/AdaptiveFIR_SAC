@@ -55,6 +55,27 @@ class TrajDataset:
                 for aidx in dp.get("anchors", []):
                     if 0 <= aidx < self.range_clean.shape[2] and k1 > k0:
                         self.range_clean[i, k0:k1, aidx] = float("nan")
+        # NLoS burst: PER-ANCHOR measurement corruption (exogenous w.r.t.
+        # actions). The actual draw is  z = range_clean + range_bias
+        # + (σ_ep * noise_scale) * randn  (see replay_env._measure /
+        # evaluate.Runner / tools.adapt_signal). During a burst the affected
+        # anchor's σ jumps LoS(0.12)→NLoS(0.45) and gains a positive multipath
+        # bias; the model-based filters keep believing R=LoS.
+        n_a = self.range_clean.shape[2]
+        nom_sig = float(cfg.meas_sigma[0])
+        self.noise_scale = torch.ones(self.n, self.T, n_a, device=device)
+        self.range_bias = torch.zeros(self.n, self.T, n_a, device=device)
+        for i, meta in enumerate(self.metas):
+            for nb in meta.get("scenario", {}).get("nlos_burst", []):
+                a = int(nb.get("anchor", -1))
+                if not (0 <= a < n_a):
+                    continue
+                k0 = int(nb["start_s"] / dt)
+                k1 = min(int((nb["start_s"] + nb["duration_s"]) / dt), self.T)
+                if k1 <= k0:
+                    continue
+                self.noise_scale[i, k0:k1, a] = float(nb.get("sigma", nom_sig)) / max(nom_sig, 1e-9)
+                self.range_bias[i, k0:k1, a] = float(nb.get("bias_m", 0.0))
         print(f"[dataset:{split}] {self.n} trajs x {self.T} steps "
               f"({self.gt.element_size()*self.gt.nelement()/1e6:.1f} MB gt)")
         self._build_disturb_onsets(cfg)
