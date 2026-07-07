@@ -216,6 +216,24 @@ class Config:
     nlos_duration_range: tuple = (2.0, 4.0)    # s per NLoS burst
     nlos_sigma: float = 0.45                   # NLoS σ [m] (R≈0.20 m², INFME-adjacent)
     nlos_bias_range: tuple = (0.3, 0.5)        # m positive multipath bias (< innov_gate 2.0)
+    # ── TIME-CORRELATED (Gauss-Markov / OU) per-anchor measurement bias
+    #    [Phase-0 last mechanism]. White measurement noise always averages down
+    #    √N, so N_opt pins at N_max (Phase-0 NO-GO). Real UWB multipath/NLoS
+    #    error is TIME-CORRELATED (geometry-dependent, slowly wandering), which
+    #    breaks the averaging gain and is the only untried measurement-side way
+    #    to make N_opt finite. Discrete OU per (traj, anchor):
+    #       b[k+1] = (1 - dt/τ)·b[k] + N(0, σ_w),   σ_w = σ_b·√(1-(1-dt/τ)²)
+    #    → zero-mean, stationary std σ_b, correlation time τ. Replaces the
+    #    old within-burst CONSTANT bias (which had no N-lever: every epoch in a
+    #    window was identically polluted). LoS baseline = nearly static fine
+    #    systematic error; NLoS burst = fast-wandering (τ < window) — the lever.
+    gm_bias: bool = True                       # enable OU measurement bias
+    los_bias_std: float = 0.04                 # σ_b LoS baseline [m] (fine systematic)
+    los_bias_tau: float = 3.0                  # τ LoS [s] (nearly static, 2~4 s)
+    nlos_bias_std: float = 0.22                # σ_b NLoS burst [m] (0.15~0.30)
+    nlos_bias_tau: float = 0.5                 # τ NLoS [s] (0.3~0.8 s; < N·dt window → wanders)
+    gm_bias_clip: float = 1.5                  # |b| clamp [m] (stay < innov_gate 2.0)
+    gm_bias_seed: int = 20260708               # fixed OU draw → reproducible across tools
     # held-out (outside training ranges → generalization claim)
     heldout_mass_delta_range: tuple = (0.70, 0.90)
     heldout_gust_speed_range: tuple = (14.0, 18.0)

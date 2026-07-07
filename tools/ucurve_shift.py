@@ -41,6 +41,24 @@ REGIMES = [
     ("nlos_burst",       "nlos_burst",       0.3, "tab:orange"),
     ("anchor_dropout",   "anchor_dropout",   0.3, "tab:blue"),
 ]
+TAIL_STEPS = 25    # recovery-tail: first 25 steps after each nlos burst ends
+
+
+def recovery_tail_mask(cfg, ds, label, margin_s, tail_steps):
+    """first `tail_steps` after each burst window end (excluding the window)."""
+    from datagen.scenario import disturbance_intervals
+    dt, T = cfg.dt, ds.T
+    mg = int(margin_s / dt)
+    win = window_mask(cfg, ds, label, margin_s)
+    m = np.zeros((ds.n, T), bool)
+    for i, meta in enumerate(ds.metas):
+        for (t0, t1, lab) in disturbance_intervals(meta.get("scenario", {})):
+            if lab == label:
+                s0 = min(int(t1 / dt) + mg, T)
+                m[i, s0:min(s0 + tail_steps, T)] = True
+    m &= ~win
+    m[:, :cfg.N_max] = False
+    return m
 
 
 def run_fixed_err(cfg, ds, N, z, dev):
@@ -98,16 +116,21 @@ def main():
         if not mask.any():
             continue
         curves[name] = np.array([rmse(err[N], mask) for N in NGRID])
+        # recovery-tail overlay for nlos_burst (fast-τ OU relaxes here)
+        if name == "nlos_burst":
+            tm = recovery_tail_mask(cfg, ds, label, margin, TAIL_STEPS) & rset[:, None]
+            if tm.any():
+                curves["nlos_recovery-tail"] = np.array([rmse(err[N], tm) for N in NGRID])
 
     # ── report ──
     print("\nfixed-N U-curve RMSE [m] over each regime's window (λ=1):")
     print("  " + f"{'regime':17s}" + " ".join(f"N{n:>2d}" for n in NGRID) + "  N_opt")
-    for name, *_ in REGIMES:
+    for name in [r[0] for r in REGIMES] + ["nlos_recovery-tail"]:
         if name not in curves:
             continue
         c = curves[name]; nopt = NGRID[int(np.argmin(c))]
         cells = " ".join(f"{v:.3f}" for v in c)
-        print(f"  {name:17s}{cells}  {nopt:>4d}")
+        print(f"  {name:19s}{cells}  {nopt:>4d}")
     if "nominal" in curves and "turbulence_burst" in curves:
         dn = NGRID[int(np.argmin(curves['nominal']))]
         dt = NGRID[int(np.argmin(curves['turbulence_burst']))]
@@ -117,12 +140,15 @@ def main():
     # ── figure ──
     os.makedirs(args.outdir, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6.4, 4.4))
-    for name, label, margin, color in REGIMES:
+    plot_specs = [(n, c) for (n, _, _, c) in REGIMES] + \
+                 [("nlos_recovery-tail", "tab:green")]
+    for name, color in plot_specs:
         if name not in curves:
             continue
         c = curves[name]
         nopt = NGRID[int(np.argmin(c))]
-        ax.plot(NGRID, c, marker="o", color=color, label=f"{name} (N*={nopt})")
+        ls = "--" if name == "nlos_recovery-tail" else "-"
+        ax.plot(NGRID, c, marker="o", color=color, ls=ls, label=f"{name} (N*={nopt})")
         ax.scatter([nopt], [c.min()], color=color, s=80, zorder=5,
                    edgecolor="k", linewidth=0.6)
     ax.axvline(14, color="k", ls="--", lw=1, alpha=.5, label="DI-FME N=14")

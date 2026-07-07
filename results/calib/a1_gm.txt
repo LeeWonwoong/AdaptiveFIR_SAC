@@ -1,0 +1,11 @@
+A-1: OU-bias fixed-N U-curve  (nominal, σ_LoS=0.12, λ=1, N grid [8, 10, 12, 14, 16, 18, 20], M=6, T=700)
+    σ_b  τ[s]  N 8 N10 N12 N14 N16 N18 N20   N_opt trueU
+   0.00    --  0.231 0.214 0.202 0.192 0.183 0.176 0.170      20 False   (white ref)
+   0.10  0.20  0.364 0.493 0.454 0.448 0.457 0.478 0.456       8 False
+   0.10  0.40  0.419 0.359 0.412 0.351 0.347 0.345 0.342      20 False
+   0.20  0.20  0.659 0.708 0.739 0.708 0.705 0.702 0.742       8 False
+   0.20  0.40  0.670 0.644 0.672 0.712 0.664 0.726 0.708      10  True  ← INTERNAL floor
+
+  SUMMARY:
+    ✓ INTERNAL floor N_opt=10 at σ_b=0.2, τ=0.4s (→ candidate LoS params)
+  plot → results/calib/ucurve_gm_nominal.png

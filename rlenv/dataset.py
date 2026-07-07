@@ -13,6 +13,32 @@ import numpy as np
 import torch
 
 
+def gauss_markov_bias(std_field, tau_field, dt, rng, clip=None):
+    """Time-correlated (Gauss-Markov / discrete OU) per-anchor measurement bias.
+
+    Non-stationary AR(1) with per-step target std/τ so the parameters can switch
+    inside a burst window (and relax afterwards, giving a natural recovery tail):
+        a_k = 1 - dt/τ_k ,  σ_w,k = σ_b,k·√(1-a_k²)
+        b_k = a_k·b_{k-1} + σ_w,k·N(0,1)
+    b_0 drawn from the stationary N(0, σ_b,0²). Zero-mean; stationary std → σ_b.
+
+    std_field, tau_field : [n, T, n_a] float arrays (meters, seconds).
+    returns bias : [n, T, n_a] float32.
+    """
+    std = np.asarray(std_field, np.float64)
+    tau = np.asarray(tau_field, np.float64)
+    n, T, n_a = std.shape
+    a = np.clip(1.0 - dt / np.maximum(tau, dt), 0.0, 0.9999)      # [n,T,n_a]
+    sw = std * np.sqrt(np.maximum(1.0 - a * a, 1e-12))
+    b = np.empty((n, T, n_a), np.float64)
+    b[:, 0] = std[:, 0] * rng.standard_normal((n, n_a))
+    for k in range(1, T):
+        b[:, k] = a[:, k] * b[:, k - 1] + sw[:, k] * rng.standard_normal((n, n_a))
+    if clip is not None:
+        np.clip(b, -clip, clip, out=b)
+    return b.astype(np.float32)
+
+
 class TrajDataset:
     def __init__(self, cfg, split, device):
         self.cfg, self.dev = cfg, device
@@ -64,7 +90,11 @@ class TrajDataset:
         n_a = self.range_clean.shape[2]
         nom_sig = float(cfg.meas_sigma[0])
         self.noise_scale = torch.ones(self.n, self.T, n_a, device=device)
-        self.range_bias = torch.zeros(self.n, self.T, n_a, device=device)
+        # per-(traj,step,anchor) OU parameter fields: LoS baseline everywhere,
+        # NLoS burst windows switch to the fast/large regime (see gauss_markov_bias).
+        gm = bool(getattr(cfg, "gm_bias", False))
+        std_f = np.full((self.n, self.T, n_a), float(getattr(cfg, "los_bias_std", 0.0)), np.float64)
+        tau_f = np.full((self.n, self.T, n_a), float(getattr(cfg, "los_bias_tau", 1.0)), np.float64)
         for i, meta in enumerate(self.metas):
             for nb in meta.get("scenario", {}).get("nlos_burst", []):
                 a = int(nb.get("anchor", -1))
@@ -75,7 +105,28 @@ class TrajDataset:
                 if k1 <= k0:
                     continue
                 self.noise_scale[i, k0:k1, a] = float(nb.get("sigma", nom_sig)) / max(nom_sig, 1e-9)
-                self.range_bias[i, k0:k1, a] = float(nb.get("bias_m", 0.0))
+                # [Phase-0 last mechanism] REPLACE the old within-burst CONSTANT
+                # bias with a fast time-correlated (OU) bias — the wandering
+                # within the window is what breaks √N averaging and gives finite N_opt.
+                std_f[i, k0:k1, a] = float(getattr(cfg, "nlos_bias_std", nb.get("bias_m", 0.0)))
+                tau_f[i, k0:k1, a] = float(getattr(cfg, "nlos_bias_tau", 1.0))
+        if gm:
+            rng = np.random.default_rng(int(getattr(cfg, "gm_bias_seed", 0)))
+            bias = gauss_markov_bias(std_f, tau_f, dt, rng,
+                                     clip=float(getattr(cfg, "gm_bias_clip", 1.5)))
+            self.range_bias = torch.tensor(bias, device=device)
+        else:
+            # legacy path: within-burst constant multipath bias
+            self.range_bias = torch.zeros(self.n, self.T, n_a, device=device)
+            for i, meta in enumerate(self.metas):
+                for nb in meta.get("scenario", {}).get("nlos_burst", []):
+                    a = int(nb.get("anchor", -1))
+                    if not (0 <= a < n_a):
+                        continue
+                    k0 = int(nb["start_s"] / dt)
+                    k1 = min(int((nb["start_s"] + nb["duration_s"]) / dt), self.T)
+                    if k1 > k0:
+                        self.range_bias[i, k0:k1, a] = float(nb.get("bias_m", 0.0))
         print(f"[dataset:{split}] {self.n} trajs x {self.T} steps "
               f"({self.gt.element_size()*self.gt.nelement()/1e6:.1f} MB gt)")
         self._build_disturb_onsets(cfg)
