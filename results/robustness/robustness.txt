@@ -1,0 +1,26 @@
+[robustness] 44 trajs x 1500 steps  σ_LoS=0.12  N∈[8,20]  (data=data_diag)
+  running EKF / FIR8 / FIR14 / FIR20 / RuleFME(adaptive) / Greedy(oracle) ...
+
+RMSE [m] — nominal (all trajs) and each disturbance WINDOW
+  region                EKF     FIR8    FIR14    FIR20  RuleFME   Greedy
+  nominal             0.167    0.255    0.220    0.201    0.201    0.163
+  turbulence_burst    0.393    0.253    0.223    0.214    0.206    0.166
+  nlos_burst          0.280    0.532    0.474    0.445    0.451    0.358
+  anchor_dropout      0.171    2.028    1.270    1.062    1.061    0.777
+
+PEAK error [m] inside each disturbance window (robustness = lower)
+  window                EKF     FIR8    FIR14    FIR20  RuleFME   Greedy
+  turbulence_burst    0.681    0.641    0.534    0.510    0.501    0.447
+  nlos_burst          0.508    1.515    1.235    1.122    1.278    1.044
+  anchor_dropout      0.279    5.455    3.086    2.476    2.474    2.019
+
+Greedy chosen-N: nominal vs window (does it adapt?)
+  nominal  meanN=15.1
+  turbulence_burst meanN=15.0  (ΔN=-0.2)
+  nlos_burst       meanN=14.9  (ΔN=-0.2)
+  anchor_dropout   meanN=15.1  (ΔN=-0.1)
+
+VERDICT (plain):
+  turbulence_burst bestFIR=0.214 EKF=0.393 | Greedy +22% vs bestFIR, Rule +4% vs bestFIR, FIR-family wins
+  nlos_burst       bestFIR=0.445 EKF=0.280 | Greedy +20% vs bestFIR, Rule -1% vs bestFIR, EKF wins
+  anchor_dropout   bestFIR=1.062 EKF=0.171 | Greedy +27% vs bestFIR, Rule +0% vs bestFIR, EKF wins
