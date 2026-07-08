@@ -199,7 +199,7 @@ class DIFME(WeightedFME):
         return super().step(u_prev, z, self.N_fix, self.l_fix)
 
     @torch.no_grad()
-    def _solve(self, N, lam):
+    def _solve(self, N, lam, Np=None):
         Mb, W, nx, nz = self.M, self.W, self.nx, self.nz
         eye = self.eyeh
         fv = self.w_valid.sum(dim=1)

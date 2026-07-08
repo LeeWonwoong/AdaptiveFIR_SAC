@@ -69,6 +69,7 @@ class WeightedFME:
         self.u_buf = torch.zeros(M, W, nx, device=d)       # composed pseudo-input
         self.C_buf = torch.zeros(M, W, nz, nx, device=d)
         self.z_buf = torch.zeros(M, W, nz, device=d)       # pseudo-measurement
+        self.sp_buf = torch.zeros(M, W, nx, device=d)      # anchor (prediction) state at epoch
         self.w_valid = torch.zeros(M, W, device=d)         # 1 if slot filled & not gated
         self.s_hat = torch.zeros(M, nx, device=d)
         self.filled = torch.zeros(M, dtype=torch.long, device=d)
@@ -93,29 +94,45 @@ class WeightedFME:
         self.u_buf[idx] = 0.0
         self.C_buf[idx] = 0.0
         self.z_buf[idx] = 0.0
+        self.sp_buf[idx] = 0.0
         self.w_valid[idx] = 0.0
         self.s_hat[idx] = s0
         self.filled[idx] = 0
         self.A_acc[idx] = self.eyeh
         self.u_acc[idx] = 0.0
         self.aux_P[idx] = 0.1 * self.eyeh
-        self.handed[idx] = False
+        # self_anchor ablation: hand over immediately (skip EKF warmup) so the
+        # filter self-linearizes from t=0 with no stable seed — reproduces the
+        # small-N divergence. Deployed filter (self_anchor=False) warms up.
+        self.handed[idx] = bool(self.cfg.self_anchor)
         self.s_lin[idx] = s0
 
     # -------------------------------------------------- one filter step
     @torch.no_grad()
-    def step(self, u_prev, z, N, lam):
+    def step(self, u_prev, z, N, lam, Np=None):
         """
         u_prev [M,4]    control acting from step k-1 -> k (base rate dt)
         z      [M,4]|None   UWB at k (None = prediction substep, no epoch)
         N, lam [M]      agent parameters (epochs / lag weight)
+        Np     [M]|None mini-batch size (two-stage stage-1 length; None = N,
+                        i.e. classical batch — backward compatible)
         returns (s_hat [M,12], nu [M,4]|None, s_pred [M,12])
         """
         m = self.model
-        # frozen linearization along the ANCHOR track (aux-EKF trajectory,
-        # EFIR practice); self_anchor=True = paper-faithful ablation where the
-        # delivered estimate itself seeds the linearization (DI-FME eq.(7)).
-        s_prev = self.s_hat if self.cfg.self_anchor else self.s_lin
+        # ── LINEARIZATION ANCHOR (classical extended-FIR, self-sustaining) ──
+        # The FIR estimator linearizes along its OWN delivered trajectory once
+        # it has taken over (DI-FME eq.(7): A_t, C_t evaluated at the previous
+        # FIR estimate s_hat_{t-1}). The auxiliary EKF is a WARMUP-ONLY device:
+        # it provides the linearization anchor and the output ONLY until the
+        # window is long enough to solve (handover), then it is switched OFF
+        # and never runs again. After handover the horizon fills, step by step,
+        # with Jacobians seeded by FIR estimates until — within N epochs — the
+        # whole window is FIR-anchored and the filter is fully self-sustaining.
+        #   pre-handover  (~handed): anchor = aux-EKF track   (s_lin)
+        #   post-handover ( handed): anchor = own estimate    (s_hat)
+        # per-env because each environment hands over at its own epoch.
+        hb = self.handed.view(-1, 1)                    # [M,1]
+        s_prev = torch.where(hb, self.s_hat, self.s_lin)
         A = m.jac_f(s_prev, u_prev)                     # [M,12,12]
         s_pred = m.f(s_prev, u_prev)
         u_t = s_pred - torch.bmm(A, s_prev.unsqueeze(-1)).squeeze(-1)
@@ -126,9 +143,10 @@ class WeightedFME:
         s_hold = torch.bmm(A, self.s_hat.unsqueeze(-1)).squeeze(-1) + u_t
 
         if z is None:                                   # ── prediction substep ──
-            if not self.cfg.self_anchor:
-                self.s_lin = s_pred                     # advance anchor track
-            s_hat = self._clamp(s_pred if self.cfg.self_anchor else s_hold)
+            # advance the aux-EKF anchor track ONLY while still warming up;
+            # once handed over the anchor rides the FIR estimate (s_hold).
+            self.s_lin = torch.where(hb, self.s_lin, s_pred)
+            s_hat = self._clamp(s_hold)
             self.s_hat = s_hat
             return s_hat, None, s_pred
 
@@ -153,14 +171,21 @@ class WeightedFME:
         self.u_buf = torch.roll(self.u_buf, 1, dims=1); self.u_buf[:, 0] = self.u_acc
         self.C_buf = torch.roll(self.C_buf, 1, dims=1); self.C_buf[:, 0] = C
         self.z_buf = torch.roll(self.z_buf, 1, dims=1); self.z_buf[:, 0] = z_t
+        self.sp_buf = torch.roll(self.sp_buf, 1, dims=1); self.sp_buf[:, 0] = s_pred
         self.w_valid = torch.roll(self.w_valid, 1, dims=1); self.w_valid[:, 0] = ok
         self.filled = torch.clamp(self.filled + 1, max=self.W)
         Aep = self.A_acc.clone()                        # epoch transition (for aux P)
         self.A_acc = self.eyeh.expand(self.M, self.nx, self.nx).clone()
         self.u_acc = torch.zeros(self.M, self.nx, device=self.dev)
 
-        # auxiliary EKF — always advanced: it is the linearization anchor
-        # track (and the pre-handover output). Gated epochs: time update only.
+        # ── auxiliary EKF — WARMUP ONLY ──
+        # Runs to provide the pre-handover anchor + output. Frozen the instant
+        # an environment hands over: no measurement update, no covariance
+        # growth, no anchor advance afterwards (the FIR trajectory takes over).
+        # We still compute it every epoch (cheap, static shapes) but MASK its
+        # effect to pre-handover environments so a handed-over env's EKF state
+        # can never leak back into the delivered estimate or the linearization.
+        warm = (~self.handed).view(-1, 1, 1).float()    # [M,1,1] 1 while warming
         P_pred = torch.bmm(torch.bmm(Aep, self.aux_P),
                            Aep.transpose(1, 2)) + self.aux_Q
         Sm = torch.bmm(torch.bmm(C, P_pred), C.transpose(1, 2)) + self.aux_R
@@ -168,24 +193,40 @@ class WeightedFME:
         okc = ok.unsqueeze(1)
         s_ekf = s_pred + okc * torch.bmm(K, nu.unsqueeze(-1)).squeeze(-1)
         P_upd = torch.bmm(self.eyeh - torch.bmm(K, C), P_pred)
-        self.aux_P = ok.view(-1, 1, 1) * P_upd + (1 - ok.view(-1, 1, 1)) * P_pred
-        if not self.cfg.self_anchor:
-            self.s_lin = s_ekf
+        aux_P_next = ok.view(-1, 1, 1) * P_upd + (1 - ok.view(-1, 1, 1)) * P_pred
+        # freeze aux covariance once handed over
+        self.aux_P = warm * aux_P_next + (1.0 - warm) * self.aux_P
 
         # pure FME solve on the epoch window
-        s_fme = self._solve(N.float(), lam)
+        if Np is None:                      # RL interface passes only (N, lam);
+            Np = torch.full_like(N, float(getattr(self.cfg, "Np_fix", 4)))
+        s_fme = self._solve(N.float(), lam, Np=Np)
         s_fme = torch.where(torch.isfinite(s_fme), s_fme, s_pred)   # numeric guard
 
-        # handover latch: gain existence  filled_valid >= N_min
+        # handover latch: gain existence  filled_valid >= N_min (one-way, never
+        # un-latches — once the FIR takes over it stays self-sustaining).
         fv = self.w_valid.sum(dim=1)
-        self.handed = self.handed | (fv >= float(self.cfg.N_min))
-        # PURE output rule: pre-handover -> aux EKF (literature warmup, the
-        # aux filter's ONLY output duty); post-handover -> the weighted-LS
-        # solve whenever the active window has rank (a GATED current epoch is
-        # simply EXCLUDED from the window — the solve over the remaining rows
-        # is still the pure FME, no output substitution); rank-deficient
-        # window -> tangent time-update of the delivered state. No estimator
-        # blending anywhere.
+        was_handed = self.handed.clone()
+        # handover once the buffer holds N_max valid epochs: every N in
+        # [N_min, N_max] is then fully available (no growing-window transient,
+        # no N clipping). Warmup runs N_max epochs so this is satisfied before
+        # the first SAC action. (SEFFB: a horizon-N filter is used only when N
+        # samples are buffered — here we wait for the largest N.)
+        handover_len = float(getattr(self.cfg, "handover_len", self.cfg.N_max))
+        self.handed = self.handed | (fv >= handover_len)
+
+        # advance the aux-EKF ANCHOR track only for still-warming environments;
+        # a handed-over env's linearization is carried by its own estimate and
+        # must not be overwritten by the (now frozen) EKF.
+        self.s_lin = torch.where(was_handed.view(-1, 1), self.s_lin, s_ekf)
+
+        # ── PURE output rule ──
+        #   pre-handover  -> aux EKF (warmup; the EKF's ONLY output duty)
+        #   post-handover -> weighted-LS FME solve when the active window has
+        #                    rank; a GATED current epoch is simply EXCLUDED
+        #                    from the window (solve over remaining rows is still
+        #                    pure FME); rank-deficient window -> tangent
+        #                    time-update of the delivered state. No blending.
         N_eff = torch.minimum(N.float(), fv).clamp(min=1.0)
         rows = (self._weights(N_eff, lam) > 0).float().sum(dim=1)
         enough = (rows * self.nz >= self.nx)
@@ -216,55 +257,181 @@ class WeightedFME:
         mask = (j < N.unsqueeze(1)).float()
         return torch.pow(lam.unsqueeze(1).clamp(min=1e-3), j) * mask * self.w_valid
 
-    def _solve(self, N, lam):
+    def _solve(self, N, lam, Np=None):
         """
-        Chronological recursion over epoch slots (oldest c=0 .. newest c=W-1):
-            Phi_0 = I, d_0 = 0 ;  Phi_c = Abar_c Phi_{c-1},  d_c = Abar_c d_{c-1} + ubar_c
-        rows:  H_c = C_c Phi_c,  y_c = z~_c - C_c d_c    (sqrt-weighted, stacked)
-        solve: fp64 weighted QR lstsq (+ eps Tikhonov rows for numerical rank
-               safety only);  s_hat = Phi_final s0 + d_final.
-        Anchor = ACTIVE window start m = k - N + 1 (classical FME); N clipped
-        to filled_valid so the chain never touches empty slots (safe for any
-        caller: step, oracle grids, probes).
+        DI-FME-original TWO-STAGE solve over the epoch window [m, k]:
+
+          Stage 1 (mini-batch, eq.(18)):  the OLDEST Np epochs [m, i],
+              i = m + Np - 1.  Weighted LS in the window-start frame,
+              H_j = C_j Phi_{m,j},  y_j = z~_j - C_j d_j,
+              w_j = lam^(lag_j - lag_i)  (so the global epoch weight is
+              lam^(k-j) after stage-2 decay).  Solved by fp64 QR (the SAME
+              pseudo-inverse as eq.(18), computed at condition kappa instead
+              of kappa^2).  s_i = Phi_{m,i} s_m + d_i ;  information
+              Om_i = Phi^{-T} (H^T W H) Phi^{-1}   (G_i = Om_i^{-1}).
+          Stage 2 (iteration, eq.(19)-(22) / Shmaliy recursion, information
+              form, extended with lam as per-epoch information decay):
+              for l = i+1 .. k:
+                s^- = Abar_l s + ubar_l ;  Om^- = lam * Abar^{-T} Om Abar^{-1}
+                Om  = Om^- + C_l^T C_l ;   K = Om^{-1} C_l^T
+                s   = s^- + K (z~_l - C_l s^-)
+              gated/dropped epoch (no valid rows): s = s^-, Om = Om^-.
+
+          Np = None or Np >= N  ->  mini-batch covers the whole window
+          (classical batch FME; backward compatible with all callers).
+        Linear-limit equivalence (Shmaliy S18-S24): stage-1+2 is the RLS
+        factorization of the same weighted window LS, so deadbeat (T2) holds
+        for any admissible (N, Np, lam). Vectorized; per-env (N, Np) masks.
         """
         M, W, nx, nz = self.M, self.W, self.nx, self.nz
+        dev = self.dev
         Ab = self.A_buf.double()
         ub = self.u_buf.double()
         Cb = self.C_buf.double()
         zb = self.z_buf.double()
-        eye = self.eyeh.double()
-        eyeM = eye.expand(M, nx, nx)
-        Phi = eyeM.clone()
-        d = torch.zeros(M, nx, device=self.dev, dtype=torch.float64)
-        Hs, ys = [], []
+        eyeM = self.eyeh.double().expand(M, nx, nx)
+
         fv = self.w_valid.sum(dim=1).double()
         N_eff = torch.minimum(N.double().round(), fv).clamp(min=1.0)
-        start_lag = (N_eff.long() - 1).clamp(0, W - 1)
-        w = self._weights(N_eff.float(), lam).double()
+        full_batch = (Np is not None) and bool((Np <= 0).all())
+        if Np is None or full_batch:
+            # None -> classical batch (=N);  <=0 sentinel -> full-batch mode:
+            # mini-batch spans the WHOLE window, no stage-2 iteration.
+            Np_eff = N_eff.clone()
+        else:
+            Np_eff = torch.minimum(Np.double().round().clamp(min=1.0), N_eff)
+        start_lag = (N_eff.long() - 1).clamp(0, W - 1)              # window start m
+        bound_lag = (N_eff.long() - Np_eff.long()).clamp(0, W - 1)  # mini-batch end i
+
+        # ── pass A: chain + mini-batch rows (QR) + information accumulation ──
+        Phi = eyeM.clone()
+        d = torch.zeros(M, nx, device=dev, dtype=torch.float64)
+        Macc = torch.zeros(M, nx, nx, device=dev, dtype=torch.float64)
+        Phi_b = eyeM.clone()
+        d_b = torch.zeros(M, nx, device=dev, dtype=torch.float64)
+        s_bar = torch.zeros(M, nx, device=dev, dtype=torch.float64)  # anchor at window start
+        Hs, ys = [], []
+        vlag = self.w_valid.double()
+        lam_d = lam.double().clamp(min=1e-3)
+
         for c in range(W):
             lag = W - 1 - c
+            lag_t = torch.full((M,), lag, dtype=torch.long, device=dev)
+            in_win = (lag_t <= start_lag)
             if c > 0:
                 A = Ab[:, lag]
-                Phi = torch.bmm(A, Phi)
-                d = torch.bmm(A, d.unsqueeze(-1)).squeeze(-1) + ub[:, lag]
-            is_start = (start_lag == lag)
+                Phi_n = torch.bmm(A, Phi)
+                d_n = torch.bmm(A, d.unsqueeze(-1)).squeeze(-1) + ub[:, lag]
+                Phi = torch.where(in_win.view(M, 1, 1), Phi_n, Phi)
+                d = torch.where(in_win.view(M, 1), d_n, d)
+            is_start = (lag_t == start_lag)
             Phi = torch.where(is_start.view(M, 1, 1), eyeM, Phi)
             d = torch.where(is_start.view(M, 1), torch.zeros_like(d), d)
-            H = torch.bmm(Cb[:, lag], Phi)
-            y = zb[:, lag] - torch.bmm(Cb[:, lag], d.unsqueeze(-1)).squeeze(-1)
-            # sqrt(time weight) x channel whitening 1/sigma  (positive row
-            # weights: the unbiasedness Lemma holds unchanged)
-            sw = w[:, lag].sqrt().view(M, 1, 1) * self.Dw.double().view(1, -1, 1)
-            Hs.append(sw * H)                        # sw: [M,nz,1] broadcast
+            s_bar = torch.where(is_start.view(M, 1), self.sp_buf[:, lag].double(),
+                                s_bar)
+
+            C = Cb[:, lag]
+            H = torch.bmm(C, Phi)
+            y = zb[:, lag] - torch.bmm(C, d.unsqueeze(-1)).squeeze(-1)
+            in_mb = in_win & (lag_t >= bound_lag)
+            w_mb = torch.pow(lam_d, (lag_t - bound_lag).clamp(min=0).double())
+            w_mb = torch.where(in_mb, w_mb * vlag[:, lag], torch.zeros_like(w_mb))
+            sw = w_mb.sqrt().view(M, 1, 1)
+            Hs.append(sw * H)
             ys.append(sw.squeeze(-1) * y)
-        Hb = torch.cat(Hs, dim=1)                        # [M, nz*W, 12]
+            Macc = Macc + w_mb.view(M, 1, 1) * torch.bmm(H.transpose(1, 2), H)
+            at_b = (lag_t == bound_lag) & in_win
+            Phi_b = torch.where(at_b.view(M, 1, 1), Phi, Phi_b)
+            d_b = torch.where(at_b.view(M, 1), d, d_b)
+
+        Hb = torch.cat(Hs, dim=1)
         yb = torch.cat(ys, dim=1)
-        # numerical-rank-safety rows ONLY (relative eps ~1e-8; not a prior)
-        row_scale = Hb.pow(2).sum(dim=(1, 2)).div(nx).sqrt().clamp(min=1e-9)
-        reg = (self.eps * row_scale).view(M, 1, 1) * eyeM
-        Hb = torch.cat([Hb, reg], dim=1)
-        yb = torch.cat([yb, torch.zeros(M, nx, device=self.dev,
-                                        dtype=torch.float64)], dim=1)
-        s0 = torch.linalg.lstsq(Hb, yb.unsqueeze(-1)).solution.squeeze(-1)
-        s_hat = torch.bmm(Phi, s0.unsqueeze(-1)).squeeze(-1) + d
-        return s_hat.float()
+        # eq.(18) mini-batch estimate by the NORMAL EQUATIONS with a plain
+        # inverse (NO SVD): solve (He^T He + rho I) delta = He^T y'.
+        # DEVIATION solve around the anchor (linearization) trajectory:
+        #   delta = s_m - s_bar,  y' = y - H s_bar.
+        # In the observable subspace this is the identical LS solution (affine
+        # equivariance -> unbiasedness/deadbeat unchanged, T2). The Tikhonov
+        # ridge rho = ridge_eps * tr(He^T He)/ne GUARANTEES invertibility of
+        # the observable-block normal matrix and leaves the near-null
+        # (unobservable) directions at delta ~ 0 -> they follow the dynamics
+        # propagation (the K->0 behavior of the original iterative form).
+        ne = getattr(self.cfg, "est_dim", 6)   # measurement-corrected block [p, v]
+        yb = yb - torch.bmm(Hb, s_bar.unsqueeze(-1)).squeeze(-1)
+        He = Hb[:, :, 0:ne]                     # observable-block columns
+        eyeE = torch.eye(ne, device=dev, dtype=torch.float64).expand(M, ne, ne)
+        HtH = torch.bmm(He.transpose(1, 2), He)                    # [M,ne,ne]
+        Hty = torch.bmm(He.transpose(1, 2), yb.unsqueeze(-1))      # [M,ne,1]
+        rho = (self.eps * HtH.diagonal(dim1=1, dim2=2).sum(-1).div(ne)
+               .clamp(min=1e-12))
+        HtH_reg = HtH + rho.view(M, 1, 1) * eyeE                   # invertible
+        d6 = torch.linalg.solve(HtH_reg, Hty).squeeze(-1)
+        delta = torch.zeros(M, nx, device=dev, dtype=torch.float64)
+        delta[:, 0:ne] = d6
+        s_m = s_bar + delta
+
+        # ── full-batch mode: Np <= 0 sentinel -> single-stage window LS IS the
+        #    estimate; skip stage-2 entirely. With Np_eff == N_eff the batch
+        #    spans the whole window, so Phi_b, d_b are the window-start (m)
+        #    transition and s_k = Phi_b s_m + d_b.
+        if full_batch:
+            s_full = torch.bmm(Phi_b, s_m.unsqueeze(-1)).squeeze(-1) + d_b
+            return s_full.float()
+        s_run = torch.bmm(Phi_b, s_m.unsqueeze(-1)).squeeze(-1) + d_b
+        # boundary information on the estimated block only (6x6):
+        # Om6 = Phi6^{-T} Macc[0:ne,0:ne] Phi6^{-1}
+        eyeE = torch.eye(ne, device=dev, dtype=torch.float64).expand(M, ne, ne)
+        M6 = Macc[:, 0:ne, 0:ne]
+        mscale = M6.diagonal(dim1=1, dim2=2).sum(-1).div(ne).clamp(min=1e-12)
+        M6 = M6 + (self.eps * mscale).view(M, 1, 1) * eyeE
+        P6 = Phi_b[:, 0:ne, 0:ne]
+        X = torch.linalg.solve(P6.transpose(1, 2), M6)
+        Om_run = torch.linalg.solve(P6.transpose(1, 2),
+                                    X.transpose(1, 2)).transpose(1, 2)
+        Om_run = 0.5 * (Om_run + Om_run.transpose(1, 2))
+
+        # ── pass B: stage-2 iteration over lags < bound_lag ──
+        it_any = (bound_lag > 0).any()
+        if it_any:
+            for c in range(W):
+                lag = W - 1 - c
+                lag_t = torch.full((M,), lag, dtype=torch.long, device=dev)
+                in_it = (lag_t < bound_lag)
+                if not in_it.any():
+                    continue
+                A = Ab[:, lag]
+                C = Cb[:, lag]
+                zt = zb[:, lag]
+                ok = vlag[:, lag]
+                ne = getattr(self.cfg, "est_dim", 6)
+                # full 12-dim tangent propagation of the state
+                s_pr = torch.bmm(A, s_run.unsqueeze(-1)).squeeze(-1) + ub[:, lag]
+                # 6-dim error recursion on the estimated block: since the
+                # attitude/rate deviations are structurally zero, their
+                # coupling terms vanish and the error transition is A[0:6,0:6].
+                A6 = A[:, 0:ne, 0:ne]
+                C6 = C[:, :, 0:ne]
+                Xo = torch.linalg.solve(A6.transpose(1, 2), Om_run)
+                Om_pr = torch.linalg.solve(A6.transpose(1, 2),
+                                           Xo.transpose(1, 2)).transpose(1, 2)
+                Om_pr = lam_d.view(M, 1, 1) * 0.5 * (Om_pr + Om_pr.transpose(1, 2))
+                Om_up = Om_pr + torch.bmm(C6.transpose(1, 2), C6)
+                # K = (Om + rho I)^{-1} C6^T by a plain inverse (NO eigh):
+                # the Tikhonov ridge guarantees invertibility; near-null
+                # (unobservable) directions get vanishing gain -> propagation.
+                eyeE2 = torch.eye(ne, device=dev, dtype=torch.float64).expand(M, ne, ne)
+                rho2 = (self.eps * Om_up.diagonal(dim1=1, dim2=2).sum(-1).div(ne)
+                        .clamp(min=1e-12))
+                Om_reg = Om_up + rho2.view(M, 1, 1) * eyeE2
+                Kt = torch.linalg.solve(Om_reg, C6.transpose(1, 2))
+                innov = zt - torch.bmm(C, s_pr.unsqueeze(-1)).squeeze(-1)
+                corr6 = torch.bmm(Kt, innov.unsqueeze(-1)).squeeze(-1)
+                s_up = s_pr.clone()
+                s_up[:, 0:ne] = s_pr[:, 0:ne] + corr6
+                okv = (ok > 0).view(M, 1)
+                s_new = torch.where(okv, s_up, s_pr)
+                Om_new = torch.where(okv.view(M, 1, 1), Om_up, Om_pr)
+                s_run = torch.where(in_it.view(M, 1), s_new, s_run)
+                Om_run = torch.where(in_it.view(M, 1, 1), Om_new, Om_run)
+
+        return s_run.float()

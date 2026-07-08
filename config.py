@@ -81,14 +81,42 @@ class Config:
                                         # CALIBRATED process noise q0 the nominal N_opt≈14
                                         # (DI-FME choice) sits mid-range → real headroom.
     lam_min: float = 0.7                # Omega > 0 (unbiasedness Lemma premise)
-    ridge_eps: float = 1e-8             # RELATIVE Tikhonov rows (numerical rank safety ONLY; bias ~1e-8)
-    # PURE FME: no prior/regularization toward any prediction. The weak-
-    # observability variance of (v,eta,omega) under UWB-only short windows is
-    # made HARMLESS by anchoring the linearization on the auxiliary-EKF track
-    # (self_anchor=False, EFIR practice): the LS byproducts never feed back.
-    # self_anchor=True = paper-faithful ablation (DI-FME eq.(7) linearizes at
-    # its own estimate) — reproduces the instability the original authors
-    # report: "too small N led to unstable estimation".
+    # Inversion policy: PLAIN inverse (never SVD). ridge_eps is a RELATIVE
+    # Tikhonov floor on the observable-block normal matrices (stage-1 He^T W He
+    # and stage-2 Om). Principle (mode 3): keep it MINIMAL (1e-8) so the solve
+    # stays deadbeat/unbiased (T2) — regularization then only guards numerical
+    # rank. If a genuine singularity shows up in practice, RAISE it (mode 1,
+    # e.g. 1e-5): invertibility is guaranteed at the cost of an O(ridge_eps)
+    # deadbeat bias. Just change this one value; the code path is identical.
+    ridge_eps: float = 1e-8             # 1e-8 = principled (deadbeat); 1e-5 = singularity-safe
+    est_dim: int = 6                    # measurement-corrected block [p(3), v(3)]; attitude/
+                                        # rate follow control-driven dynamics (delta == 0) —
+                                        # the '위치만 추정' contract, structural not a prior
+    Np_fix: int = 4                     # mini-batch (stage-1) length, USER-SET, not an RL
+                                        # action: pure-FME estimates are Np-invariant
+                                        # (iterative == RLS factorization of the batch,
+                                        # Shmaliy S18-S24; verified V1), so Np only sets the
+                                        # numerical init path. Rank floor: ceil(est_dim/q)=2
+                                        # epochs; 4 gives comfortable stage-1 conditioning.
+    full_batch_flag: float = -1.0       # Np sentinel: if the Np passed to the filter is <= 0
+                                        # (e.g. this value), stage-2 iteration is SKIPPED and the
+                                        # estimate is the SINGLE full-window batch LS over N
+                                        # (SAC-chosen). Any positive Np => two-stage batch+iter.
+    _unused_rcond: float = 1e-6         # (deprecated: SVD truncation removed; plain inverse now)
+                                        # below rcond*smax are UNOBSERVABLE in the window and
+                                        # receive zero correction (follow the dynamics) — the
+                                        # literal Moore-Penrose semantics, not a prior.
+    # PURE FME, classical self-sustaining extended-FIR:
+    #   - The auxiliary EKF is WARMUP-ONLY. It serves (anchor + output) until
+    #     the window can solve (filled_valid >= N_min), then switches OFF.
+    #   - After handover the FIR linearizes along its OWN delivered trajectory
+    #     (DI-FME eq.(7): A_t, C_t at s_hat_{t-1}); the horizon fills with
+    #     FIR-anchored Jacobians and within N epochs is fully self-sustaining.
+    # self_anchor=True = ablation: SKIP the EKF warmup and self-linearize from
+    #   t=0 (no stable seed) — reproduces the instability the original authors
+    #   report ("too small N led to unstable estimation"; ~1e2 km divergence),
+    #   which is the MOTIVATION for the observability-based N_min, not a mode
+    #   the deployed filter uses.
     self_anchor: bool = False
     uwb_stride: int = 1                 # measurement epoch every `stride` filter steps
                                         # (1 = every 50 Hz step, the frozen design; >1 supported
@@ -117,7 +145,11 @@ class Config:
     resid_clip: float = 1.0             # per-anchor residual clip [m]
     episode_len: int = 150              # RL steps per segment (shorter -> higher disturbance
                                         # density + more episodes before alpha settles)
-    warmup_steps: int = 8               # aux-EKF-only phase, in EPOCHS (= N_min; handover: filled_valid>=N_min)
+    warmup_steps: int = 20              # aux-EKF-only phase in EPOCHS. Set to N_max so that,
+                                        # by the first SAC action, filled_valid == N_max and ANY
+                                        # N in [N_min, N_max] is fully available (no growing-window
+                                        # transient, no N clipping) — the SEFFB principle that a
+                                        # horizon-N filter is used only once N samples are buffered.
     n_envs: int = 64                    # vectorized log-replay envs
     uwb_sigma_range: tuple = (0.08, 0.16)   # per-episode LoS σ randomization [m] (brackets 0.12)
     # Reward: r = -||p_gt - p_hat||  (pure localization error, L2 distance),
@@ -291,7 +323,7 @@ class Config:
         assert self.N_min * self.meas_dim >= self.state_dim + 2, "N_min too small for gain existence"
         assert self.N_max >= self.N_min
         assert 0.0 < self.lam_min <= 1.0
-        self.warmup_steps = max(self.warmup_steps, self.N_min)
+        self.warmup_steps = max(self.warmup_steps, self.N_max)   # handover completed for ALL N
         self.n_anchors = len(self.anchors)
 
     # ---------- helpers ----------

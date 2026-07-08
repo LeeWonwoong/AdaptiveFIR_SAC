@@ -78,9 +78,15 @@ class _LinModel:
 
 
 def t2_deadbeat_unbiasedness():
+    # Validates the UNRESTRICTED solver algebra (est_dim=12) on a generic
+    # dense-H linear system: batch (Np=N) and two-stage (Np<N) must both be
+    # deadbeat for any admissible (N, Np, lam)  [Shmaliy S18-S24 equivalence].
+    # The est_dim=6 observable-block contract is UAV-structural (C attitude
+    # columns exactly zero) and is validated separately by T2b.
     import dataclasses
     cfg = dataclasses.replace(Config(), meas_dim=4, state_clamp=False,
-                              innov_gate=1e9, meas_sigma=(1.0,) * 4)
+                              innov_gate=1e9, meas_sigma=(1.0,) * 4,
+                              est_dim=12)
     M = 6
     fme = WeightedFME(cfg, DEV, M)
     fme.model = _LinModel()                                     # linear plant == filter model
@@ -91,15 +97,78 @@ def t2_deadbeat_unbiasedness():
     # random admissible (N, lam) per env — Lemma claims exact recovery for ALL
     N = torch.tensor([8., 11., 14., 17., 20., 9.])
     lam = torch.tensor([0.70, 0.80, 0.90, 1.00, 0.75, 0.95])
+    Np = torch.tensor([3., 11., 7., 4., 20., 5.])   # mixes batch & two-stage
     err = None
-    for k in range(30):
+    for k in range(40):   # warmup=N_max=20 -> allow self-sustaining to settle
         u = torch.randn(M, 4, generator=g)
         s_true = fme.model.f(s_true, u)
         z = fme.model.h(s_true)                                  # ZERO noise
-        s_hat, _, _ = fme.step(u, z, N, lam)
+        s_hat, _, _ = fme.step(u, z, N, lam, Np=Np)
         err = (s_hat - s_true).abs().max().item()
     assert err < 1e-3, err
-    print(f"T2 deadbeat/unbiasedness OK  (max err {err:.2e} for random (N,lam))")
+    print(f"T2 deadbeat/unbiasedness OK  (max err {err:.2e} for random (N,Np,lam))")
+
+
+class _BlockModel:
+    """UAV-structured linear plant: C attitude/rate columns are EXACTLY zero
+    (per-epoch unobservable, like UWB ranges) and the transition is block-
+    diagonal so the attitude subsystem is purely input-driven. This is the
+    setting of the est_dim=6 observable-block contract."""
+    def __init__(self, nx=12, nz=4, seed=7):
+        g = torch.Generator().manual_seed(seed)
+        Apv = torch.randn(6, 6, generator=g)
+        Apv = Apv / max(float(torch.linalg.eigvals(Apv).abs().max().real), 1.0)
+        Aar = torch.randn(6, 6, generator=g)
+        Aar = Aar / max(float(torch.linalg.eigvals(Aar).abs().max().real), 1.0)
+        self.A0 = torch.zeros(nx, nx)
+        self.A0[0:6, 0:6] = Apv
+        self.A0[6:12, 6:12] = Aar
+        self.B0 = 0.1 * torch.randn(nx, 4, generator=g)
+        self.H0 = torch.zeros(nz, nx)
+        self.H0[:, 0:6] = torch.randn(nz, 6, generator=g)         # att cols == 0
+
+    def f(self, s, u):
+        return s @ self.A0.T + u @ self.B0.T
+
+    def h(self, s):
+        return s @ self.H0.T
+
+    def jac_f(self, s, u):
+        return self.A0.expand(s.shape[0], -1, -1)
+
+    def jac_h(self, s):
+        return self.H0.expand(s.shape[0], -1, -1)
+
+
+def t2b_observable_block_deadbeat():
+    # est_dim=6 contract: measurements correct ONLY [p, v]; attitude/rate
+    # follow the (input-driven) propagation. Under the contract premise —
+    # attitude initialized true, noiseless — the delivered FULL state must be
+    # deadbeat-exact for any admissible (N, Np, lam).
+    import dataclasses
+    cfg = dataclasses.replace(Config(), meas_dim=4, state_clamp=False,
+                              innov_gate=1e9, meas_sigma=(1.0,) * 4,
+                              est_dim=6)
+    M = 6
+    fme = WeightedFME(cfg, DEV, M)
+    fme.model = _BlockModel()
+    g = torch.Generator().manual_seed(3)
+    s_true = torch.randn(M, 12, generator=g)
+    s0 = s_true.clone()
+    s0[:, 0:6] += 0.5 * torch.randn(M, 6, generator=g)   # wrong ONLY in [p, v]
+    fme.reset(torch.arange(M), s0)
+    N = torch.tensor([8., 11., 14., 17., 20., 9.])
+    lam = torch.tensor([0.70, 0.80, 0.90, 1.00, 0.75, 0.95])
+    Np = torch.tensor([3., 11., 7., 4., 20., 5.])
+    err = None
+    for k in range(40):
+        u = torch.randn(M, 4, generator=g)
+        s_true = fme.model.f(s_true, u)
+        z = fme.model.h(s_true)
+        s_hat, _, _ = fme.step(u, z, N, lam, Np=Np)
+        err = (s_hat - s_true).abs().max().item()
+    assert err < 1e-3, err
+    print(f"T2b observable-block(est_dim=6) deadbeat OK  (max err {err:.2e})")
 
 
 class _DoubleIntModel:
@@ -133,7 +202,9 @@ class _DoubleIntModel:
 def t3_lambda_responsiveness():
     import dataclasses
     cfg = dataclasses.replace(Config(), meas_dim=6, state_clamp=False,
-                              innov_gate=1e9, meas_sigma=(1.0,) * 6)
+                              innov_gate=1e9, meas_sigma=(1.0,) * 6,
+                              est_dim=12)   # this model's whole state IS the
+                                            # observable [pos, vel] block
     M = 3
     fme = WeightedFME(cfg, DEV, M)
     lin = _DoubleIntModel(dt=cfg.dt)
@@ -207,7 +278,8 @@ def t5_handover_growing_window():
     N > filled_valid is EXACTLY equivalent to N = filled_valid (clipping)."""
     import dataclasses
     cfg = dataclasses.replace(Config(), meas_dim=6, state_clamp=False,
-                              innov_gate=1e9, meas_sigma=(1.0,) * 6)
+                              innov_gate=1e9, meas_sigma=(1.0,) * 6,
+                              est_dim=12)   # _DoubleIntModel: whole state observable
     M = 2
     fme = WeightedFME(cfg, DEV, M)
     lin = _DoubleIntModel(dt=cfg.dt)
@@ -217,29 +289,36 @@ def t5_handover_growing_window():
     fme.reset(torch.arange(M), s_true + 0.3 * torch.randn(M, 12, generator=g))
     Nbig = torch.full((M,), float(cfg.N_max))
     lam = torch.full((M,), 0.9)
-    for k in range(cfg.N_max + 5):
+    hl = float(getattr(cfg, "handover_len", cfg.N_max))
+    for k in range(cfg.N_max + 8):
         u = 0.2 * torch.randn(M, 4, generator=g)
         s_true = lin.f(s_true, u)
         z = lin.h(s_true)                                # noise-free
         s_hat, _, _ = fme.step(u, z, Nbig, lam)
         fv = int(fme.w_valid.sum(dim=1)[0].item())
-        if fv >= cfg.N_min:
-            # (b) clipping equivalence: N=N_max vs N=filled_valid identical
+        handed = bool(fme.handed[0].item())
+        # (a) handover happens exactly when filled_valid reaches handover_len
+        #     (= N_max): before that the aux-EKF serves, after that the FME.
+        if fv < hl:
+            assert not handed, (k, fv, "handed too early")
+        else:
+            assert handed, (k, fv, "handover missed")
+            # (b) N-clipping equivalence once handed: N=N_max vs N=filled give
+            #     identical solves for filled in [N_min, N_max].
             a = fme._solve(Nbig, lam)
-            b = fme._solve(torch.full((M,), float(fv)), lam)
+            b = fme._solve(torch.full((M,), float(min(fv, cfg.N_max))), lam)
             assert (a - b).abs().max().item() < 1e-6, (k, fv)
-            # (a) FME actually serves: with noise-free data + ramp window the
-            # estimate is deadbeat-accurate well before the buffer is full
-            if fv < cfg.N_max:
-                assert (s_hat - s_true).abs().max().item() < 1e-2, \
-                    (k, fv, (s_hat - s_true).abs().max().item())
-    print(f"T5 handover OK  (FME serves from filled_valid={cfg.N_min}; "
-          f"N clipping exact during ramp)")
+            # (c) FME is deadbeat-accurate on noise-free data after handover
+            assert (s_hat - s_true).abs().max().item() < 1e-2, \
+                (k, fv, (s_hat - s_true).abs().max().item())
+    print(f"T5 handover OK  (aux-EKF until filled_valid={int(hl)}=N_max, "
+          f"then FME self-sustaining & deadbeat)")
 
 
 if __name__ == "__main__":
     t1_jacobians()
     t2_deadbeat_unbiasedness()
+    t2b_observable_block_deadbeat()
     t3_lambda_responsiveness()
     t4_nonlinear_sanity()
     t5_handover_growing_window()
