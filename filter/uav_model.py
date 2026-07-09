@@ -84,7 +84,8 @@ class UAVModel:
 
     def _h_single(self, s):
         d = s[0:3].unsqueeze(0) - self.anchors                                # [4,3]
-        return torch.linalg.vector_norm(d, dim=1)                              # [4] UWB only
+        rng = torch.linalg.vector_norm(d, dim=1)                               # [4] UWB
+        return torch.cat([rng, s[6:9], s[9:12]], dim=0)                        # [10] +att+gyro
 
     # ---------------- batched public API ----------------
     def f(self, s, u):
@@ -92,9 +93,17 @@ class UAVModel:
         return vmap(self._f_single)(s, u)
 
     def h(self, s):
-        """s [M,12] -> [M,4] UWB ranges (frozen spec: UWB-only measurement)."""
+        """s [M,12] -> [M,10]: UWB 4 ranges + IMU (attitude 3 + gyro 3).
+        UWB rows observe position only; attitude rows (FCU estimate) observe
+        eta = s[6:9]; gyro rows observe omega = s[9:12]. The attitude/rate
+        selector rows make the previously-null Jacobian columns full rank, so
+        the windowed normal matrix C^T C is invertible and est_dim=12 no longer
+        diverges (the yaw-unobservable failure of UWB-only)."""
         d = s[:, None, 0:3] - self.anchors[None]                               # [M,4,3]
-        return torch.linalg.vector_norm(d, dim=2)
+        rng = torch.linalg.vector_norm(d, dim=2)                               # [M,4]
+        att = s[:, 6:9]                                                        # [M,3] eta
+        gyro = s[:, 9:12]                                                      # [M,3] omega
+        return torch.cat([rng, att, gyro], dim=1)                             # [M,10]
 
     def jac_f(self, s, u):
         """A_i = df/ds | (s,u)   -> [M,12,12]"""

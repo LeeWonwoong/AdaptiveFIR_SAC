@@ -86,6 +86,7 @@ class WeightedFME:
             getattr(self.cfg, "meas_sigma", (0.05,) * nz),
             dtype=torch.float32, device=d) ** 2)
         self.handed = torch.zeros(M, dtype=torch.bool, device=d)   # handover latch
+        self.gate_esc = torch.zeros(M, device=d)   # consecutive full-reject count (gate escalation)
         self.s_lin = torch.zeros(M, nx, device=d)    # linearization anchor track (aux EKF)
 
     # -------------------------------------------------- reset
@@ -98,6 +99,7 @@ class WeightedFME:
         self.w_valid[idx] = 0.0
         self.s_hat[idx] = s0
         self.filled[idx] = 0
+        self.gate_esc[idx] = 0.0
         self.A_acc[idx] = self.eyeh
         self.u_acc[idx] = 0.0
         self.aux_P[idx] = 0.1 * self.eyeh
@@ -157,13 +159,37 @@ class WeightedFME:
         # NLOS / outlier arrives as a gate-exceeding residual. Both are
         # excluded ROW-WISE (DI-FME intermittent-dropout handling), so a single
         # bad anchor never poisons the other three.
-        anch_ok = torch.isfinite(nu) & (nu.abs() < self.cfg.innov_gate)   # [M,4]
+        #
+        # ADAPTIVE GATE RE-ACQUISITION: with dynamics-only prediction the
+        # attitude drifts (no IMU), so over a long horizon the propagated
+        # innovation can exceed the nominal gate on ALL anchors at once —
+        # then every row is dropped, the state coasts open-loop, and the
+        # error runs away (the multirate divergence). To prevent a permanent
+        # measurement blackout we widen the gate geometrically for as long as
+        # the whole epoch keeps being rejected (2m -> 4m -> 8m -> ...), and
+        # snap back to the nominal gate as soon as any anchor is re-acquired.
+        # A genuine single-anchor NLoS/dropout never triggers this (the other
+        # three anchors keep the epoch valid, so the counter stays at 0).
+        base_gate = self.cfg.innov_gate
+        gmul = torch.pow(2.0, self.gate_esc.clamp(max=6).double()).float()  # [M]
+        eff_gate = base_gate * gmul                                          # [M]
+        finite = torch.isfinite(nu)
+        # gate applies to UWB range channels only (first n_rng); IMU channels
+        # (attitude/gyro) are never dropped — they are the fusion backbone.
+        nr = self.n_rng
+        gate_ok = finite & (nu.abs() < eff_gate.view(-1, 1))               # [M,nz]
+        anch_ok = finite.clone()
+        anch_ok[:, :nr] = gate_ok[:, :nr]                                   # UWB gated
+        # (IMU rows keep anch_ok = finite = True unless NaN)
+        uwb_rej = (~anch_ok[:, :nr]).all(dim=1) & finite[:, :nr].any(dim=1)  # all UWB over gate
+        self.gate_esc = torch.where(uwb_rej, self.gate_esc + 1.0,
+                                    torch.zeros_like(self.gate_esc))
         nu = torch.nan_to_num(nu, nan=0.0)
-        aw = anch_ok.float().unsqueeze(-1)              # [M,4,1]
-        C = C * aw                                      # zero dropped-anchor rows
+        aw = anch_ok.float().unsqueeze(-1)              # [M,nz,1]
+        C = C * aw                                      # zero dropped rows
         z_t = nu + torch.bmm(C, s_pred.unsqueeze(-1)).squeeze(-1)
         z_t = z_t * anch_ok.float()                     # keep dropped rows at 0
-        # epoch counts if at least one anchor row survived (rank handled downstream)
+        # epoch counts if at least one row survived (rank handled downstream)
         ok = anch_ok.any(dim=1).float()                 # [M]
 
         # push composed slot; reset accumulators

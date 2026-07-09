@@ -59,8 +59,8 @@ class Config:
     ekf_R_sigma: float = 0.10           # practitioner datasheet σ [m] (< true 0.12~0.45)
     ekf_Q_scale: float = 0.40           # practitioner process-σ = ekf_Q_scale * q0 (~q0/2.5)
     # UWB anchors (DI-FME layout scaled to workspace)  [4,3]
-    anchors: tuple = ((0.0, 0.0, 0.0), (10.0, 0.0, 3.0),
-                      (10.0, 10.0, 0.0), (0.0, 10.0, 3.0))
+    anchors: tuple = ((0.0, 0.0, 0.0), (10.0, 0.0, 4.0),
+                      (10.0, 10.0, 0.0), (0.0, 10.0, 4.0))
     # measurement suite [FROZEN SPEC]: z = 4 UWB ranges ONLY (paper-identical).
     # The ESTIMATOR internally solves the full 12-state window LS exactly as
     # DI-FME eq.(8)-(18); the DELIVERABLE (reward/metrics/output claim) is the
@@ -71,12 +71,14 @@ class Config:
     # R≈0.2 m² per anchor, INFME-adjacent). This is the FIXED noise statistic
     # every model-based filter (FME whitening, EKF/UKF R) BELIEVES — it does NOT
     # know the NLoS σ jump, which is the whole point of [수정C].
-    meas_sigma: tuple = (0.12, 0.12, 0.12, 0.12)       # UWB LoS [m] (nominal; per-episode randomized)
+    meas_sigma: tuple = (0.12, 0.12, 0.12, 0.12,      # UWB LoS [m]
+                         0.02, 0.02, 0.02,           # IMU attitude [rad] (FCU estimate)
+                         0.01, 0.01, 0.01)           # IMU gyro [rad/s]
 
     # ══════════════════════════════════════════════════════════
     #  Weighted FME (filter)
     # ══════════════════════════════════════════════════════════
-    N_min: int = 8                      # >= dim(s)/meas-rank margin (TITS'25 convention)
+    N_min: int = 4                      # observability rank-12 reached at N=2 (UWB+IMU); 4 for noise-reduction margin
     N_max: int = 20                     # ring-buffer length W (fixed shape). At the
                                         # CALIBRATED process noise q0 the nominal N_opt≈14
                                         # (DI-FME choice) sits mid-range → real headroom.
@@ -89,7 +91,7 @@ class Config:
     # e.g. 1e-5): invertibility is guaranteed at the cost of an O(ridge_eps)
     # deadbeat bias. Just change this one value; the code path is identical.
     ridge_eps: float = 1e-8             # 1e-8 = principled (deadbeat); 1e-5 = singularity-safe
-    est_dim: int = 6                    # measurement-corrected block [p(3), v(3)]; attitude/
+    est_dim: int = 12                   # FULL 12-state corrected (UWB+IMU fusion makes C full-rank); attitude/
                                         # rate follow control-driven dynamics (delta == 0) —
                                         # the '위치만 추정' contract, structural not a prior
     Np_fix: int = 4                     # mini-batch (stage-1) length, USER-SET, not an RL
@@ -118,7 +120,7 @@ class Config:
     #   which is the MOTIVATION for the observability-based N_min, not a mode
     #   the deployed filter uses.
     self_anchor: bool = False
-    uwb_stride: int = 1                 # measurement epoch every `stride` filter steps
+    uwb_stride: int = 5                 # measurement 10Hz (DW1000 TWR x4 anchors); prediction stays 50Hz
                                         # (1 = every 50 Hz step, the frozen design; >1 supported
                                         #  as an optional realism knob — N counts epochs)
     innov_gate: float = 2.0             # per-channel |nu| gate [m]: gated epoch row EXCLUDED from window
@@ -197,7 +199,7 @@ class Config:
     scenario_probs: tuple = (0.15, 0.35, 0.25, 0.25)
     # flight patterns (NO 'aggressive': high-G maneuvers break the 1st-order
     # Taylor linearization the FIR relies on — out of scope by design).
-    flight_patterns: tuple = ("hover", "circle", "figure8", "waypoint")
+    flight_patterns: tuple = ("helical", "figure8", "waypoint")
     traj_duration_s: float = 40.0
     # ── DISTURBANCE SCENARIOS (paper-motivated: sharp events + recovery,
     #    NOT high-G maneuvers — 1st-order Taylor linearization stays valid).
@@ -312,7 +314,7 @@ class Config:
 
     # ── derived ──
     state_dim: int = 12
-    meas_dim: int = 4
+    meas_dim: int = 10                  # UWB 4 + IMU attitude 3 + gyro 3
     act_dim: int = 2
 
     @property
@@ -320,7 +322,7 @@ class Config:
         return (self.meas_dim + 2) * self.L_obs      # [nu_1..4, N_hat, lam_hat] x L
 
     def __post_init__(self):
-        assert self.N_min * self.meas_dim >= self.state_dim + 2, "N_min too small for gain existence"
+        assert self.N_min * self.meas_dim >= self.state_dim + 2, "N_min too small for gain existence"  # 4*10=40 >= 14 OK
         assert self.N_max >= self.N_min
         assert 0.0 < self.lam_min <= 1.0
         self.warmup_steps = max(self.warmup_steps, self.N_max)   # handover completed for ALL N

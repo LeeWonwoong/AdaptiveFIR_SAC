@@ -68,8 +68,36 @@ def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.5):
         v = np.array([-R0 * w * np.sin(w * t), R0 * w * np.cos(w * t), 0])
         return p, v, np.arctan2(v[1], v[0])
     if pattern == "figure8":
+        # figure-8 WITH altitude variation (z-sweep coupled to the lobe) so the
+        # non-coplanar anchors get vertical excitation — helps velocity/attitude
+        # observability under UWB-only. Planar 8 (z=0) left as "figure8_flat".
+        z = 0.8 * np.sin(w * t)
+        vz = 0.8 * w * np.cos(w * t)
+        p = c + np.array([R0 * np.sin(w * t), 0.5 * R0 * np.sin(2 * w * t), z])
+        v = np.array([R0 * w * np.cos(w * t), R0 * w * np.cos(2 * w * t), vz])
+        return p, v, np.arctan2(v[1], v[0])
+    if pattern == "figure8_flat":
         p = c + np.array([R0 * np.sin(w * t), 0.5 * R0 * np.sin(2 * w * t), 0])
         v = np.array([R0 * w * np.cos(w * t), R0 * w * np.cos(2 * w * t), 0])
+        return p, v, np.arctan2(v[1], v[0])
+    if pattern == "helical":
+        # 3D helical climb/descent: horizontal circle (excites roll/pitch via
+        # centripetal tilt) + sustained vertical motion (activates z-observation
+        # against the non-coplanar anchors). Observability of attitude through
+        # UWB position measurements stays alive at every instant. PRIMARY.
+        zc = 1.5 + 1.0 * np.sin(0.18 * w * t)           # slow vertical sweep
+        vz = 1.0 * 0.18 * w * np.cos(0.18 * w * t)
+        p = c + np.array([R0 * np.cos(w * t), R0 * np.sin(w * t), zc - c[2]])
+        v = np.array([-R0 * w * np.sin(w * t), R0 * w * np.cos(w * t), vz])
+        return p, v, np.arctan2(v[1], v[0])
+    if pattern == "figure8_3d":
+        # inclined figure-8: lateral 8 + coupled altitude oscillation. Frequent
+        # heading reversals give rich attitude excitation; the tilted plane
+        # keeps z varying against non-coplanar anchors. SECONDARY.
+        z = 0.8 * np.sin(w * t)                          # altitude coupled to lobe
+        vz = 0.8 * w * np.cos(w * t)
+        p = c + np.array([R0 * np.sin(w * t), 0.5 * R0 * np.sin(2 * w * t), z])
+        v = np.array([R0 * w * np.cos(w * t), R0 * w * np.cos(2 * w * t), vz])
         return p, v, np.arctan2(v[1], v[0])
     if pattern == "waypoint":
         wps = c + np.array([[-3, -3, 0], [3, -3, 0], [3, 3, 0], [-3, 3, 0]])
