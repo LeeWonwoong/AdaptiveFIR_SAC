@@ -89,6 +89,8 @@ class Commander(Node):
         self.state_t = 0.0
         self.fly_t = 0.0
         self.scenario = None
+        self.retry_count = 0
+        self.MAX_RETRY = 3
         self.arm_resend_t = 0.0
 
         self.timer = self.create_timer(self.TICK, self._tick)
@@ -203,7 +205,24 @@ class Commander(Node):
             p, v, yaw = self._pattern_ref(self.fly_t)
             self._send_setpoint_enu(p, v, yaw)
             self.fly_t += self.TICK
-            if self.fly_t >= self.scenario["duration_s"]:
+            # ── in-flight crash/runaway detection (online_rl_main heritage:
+            #    its LEARNING state applied SOFT/WARM/HARD resets on crash).
+            #    Under the FINAL strong disturbances (payload +60~90 %,
+            #    wind 15~20 m/s) PX4 can lose the fight — ground contact or
+            #    failsafe drift. Abort WITHOUT stop_save (the un-saved log is
+            #    discarded: the next start_log re-opens fresh rows), world-
+            #    reset, and retry the same traj slot (counter-capped below).
+            crashed = self.gt_seen and self.fly_t > 1.0 and (
+                self.gt_pos[2] < 0.15 or
+                np.linalg.norm(self.gt_pos[:2]
+                               - np.array([self.args.cx, self.args.cy])) > 12.0)
+            if crashed:
+                self.get_logger().warn(
+                    f"crash/runaway at t={self.fly_t:.1f}s "
+                    f"(alt={self.gt_pos[2]:.2f} m) — discard log & retry")
+                self._control("reset")
+                self._goto("RESET_WAIT", retry=True)
+            elif self.fly_t >= self.scenario["duration_s"]:
                 self._control("stop_save")
                 self._goto("SAVE_WAIT")
 
@@ -211,6 +230,7 @@ class Commander(Node):
             if self.state_t > 1.0:
                 self._control("reset")
                 self.q_idx += 1
+                self.retry_count = 0                 # clean save -> reset cap
                 self._goto("RESET_WAIT")
 
         elif self.state == "RESET_WAIT":             # world reset + PX4 re-settle
@@ -220,7 +240,18 @@ class Commander(Node):
 
     def _goto(self, s, retry=False):
         if retry:
-            pass                                     # same q_idx → retried
+            # retry cap = the practical stand-in for online_rl_main's
+            # HARD_RESET tier: if the same traj slot keeps failing (PX4
+            # failsafe state a world-reset cannot clear, un-flyable scenario
+            # draw, ...), skip it after MAX_RETRY instead of looping forever.
+            # A fresh scenario is re-sampled on each retry (rng advances).
+            self.retry_count += 1
+            if self.retry_count >= self.MAX_RETRY:
+                self.get_logger().warn(
+                    f"traj slot [{self.q_idx + 1}/{len(self.queue)}]: "
+                    f"{self.retry_count} consecutive failures — SKIPPING")
+                self.q_idx += 1
+                self.retry_count = 0
         self.state = s
         self.state_t = 0.0
 

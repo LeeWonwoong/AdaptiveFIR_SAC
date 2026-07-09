@@ -21,7 +21,7 @@
 # 때마다 Isaac을 재부팅해야 한다. PX4 SITL도 Pegasus가 띄우는 제3의
 # 프로세스라 "한 프로세스"는 애초에 불가능하고, "한 명령"이 정답이다.
 # ═══════════════════════════════════════════════════════════════════════
-set -uo pipefail
+set -o pipefail   # -u 제거: ROS2 setup.bash가 미정의 변수(AMENT_TRACE_SETUP_FILES)를 참조해 set -u와 충돌
 
 N_TRAIN=${1:-24}
 N_HELDOUT=${2:-6}
