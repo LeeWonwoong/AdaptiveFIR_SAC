@@ -42,6 +42,13 @@ class VectorReplayEnv:
         else:
             self.feat = cfg.meas_dim + 2                  # legacy per-channel width
         self.fme = WeightedFME(cfg, device, self.M)
+        # DI-FME 기준선 필터 (동일 측정 스트림, 고정 N/lam) — advantage 보상용
+        self.ref = WeightedFME(cfg, device, self.M) if cfg.ref_monitor_N > 0 else None
+        self.refN = torch.full((self.M,), float(max(cfg.ref_monitor_N, cfg.N_min)),
+                               device=device)
+        self.refL = torch.ones(self.M, device=device)
+        self._s_ref = None
+        self._prevN = None
         self.rng = torch.Generator(device=device)
         self.rng.manual_seed(seed)
         self.meas_sig = torch.tensor(cfg.meas_sigma, device=device)
@@ -113,6 +120,8 @@ class VectorReplayEnv:
             up, _, _, _ = self.ds.get(self.ti, self.t)
             z = self._measure() if i == stride - 1 else None
             s_hat, nu_i, _ = self.fme.step(up, z, N, lam)
+            if self.ref is not None:
+                self._s_ref, _, _ = self.ref.step(up, z, self.refN, self.refL)
             if nu_i is not None:
                 nu = nu_i
         return s_hat, nu
@@ -156,6 +165,11 @@ class VectorReplayEnv:
         s0 = gt0 + cfg.init_pos_noise * torch.randn(self.M, cfg.state_dim,
                                                     generator=self.rng, device=self.dev)
         self.fme.reset(torch.arange(self.M, device=self.dev), s0)
+        if self.ref is not None:
+            self.ref.reset(torch.arange(self.M, device=self.dev), s0.clone())
+        self._prevN = torch.full((self.M,), float(self.default_N), device=self.dev) \
+            if not torch.is_tensor(self.default_N) else \
+            self.default_N.clone().float().expand(self.M).clone()
         self.stack.zero_()
         for _ in range(cfg.warmup_steps):
             _, nu = self._epoch(self.default_N, self.default_l)
@@ -169,11 +183,24 @@ class VectorReplayEnv:
         s_hat, nu = self._epoch(N, lam)                      # one epoch = one RL step
         _, _, p_gt, _ = self.ds.get(self.ti, self.t)
         err = (p_gt - s_hat[:, 0:3]).norm(dim=1)             # L2 position error [m]
-        reward = -torch.clamp(err, max=cfg.reward_clip)      # pure -||e|| + safety clip
+        # ── reward: ABSOLUTE error only (user decision — no baseline terms).
+        ec = torch.clamp(err, max=cfg.reward_clip)
+        if getattr(cfg, "reward_mode", "sq") == "sq":
+            reward = -ec * ec        # quadratic == direct (R)MSE objective; windows
+                                     # weigh ~9x vs nominal instead of ~3x (linear)
+        else:
+            reward = -ec             # legacy linear
+        # DI-FME parallel filter = MONITOR ONLY (logging / eval table), not reward:
+        err_ref = (p_gt - self._s_ref[:, 0:3]).norm(dim=1) \
+            if self.ref is not None else err
+        if cfg.act_smooth_coef > 0:                          # regime steps, not jitter
+            reward = reward - cfg.act_smooth_coef \
+                * (N.float() - self._prevN).abs() / max(cfg.N_max - cfg.N_min, 1)
+        self._prevN = N.float().clone()
         self._push_feature(nu, N, lam)
         self.step_in_ep += 1
         ep_end = self.step_in_ep >= cfg.episode_len
         done = torch.zeros(self.M, device=self.dev)          # truncation → bootstrap
         obs = self._obs()
-        info = {"err": err, "N": N, "lam": lam, "ep_end": ep_end}
+        info = {"err": err, "err_ref": err_ref, "N": N, "lam": lam, "ep_end": ep_end}
         return obs, reward, done, info

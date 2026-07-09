@@ -51,7 +51,17 @@ class TrajDataset:
         self.metas = []
         gts, us, mts, wds = [], [], [], []
         Tmin = None
+        wl = tuple(getattr(cfg, "train_scenario_types", ()) or ())
+        skipped = 0
         for f in files:
+            if wl:
+                mf0 = f.replace("traj_", "meta_").replace(".npz", ".json")
+                sc0 = (json.load(open(mf0)).get("scenario", {})
+                       if os.path.exists(mf0) else {})
+                stype = sc0.get("type") or "nominal"   # empty scenario == clean flight
+                if stype not in wl:
+                    skipped += 1
+                    continue
             z = np.load(f)
             T = z["gt"].shape[0]
             Tmin = T if Tmin is None else min(Tmin, T)
@@ -66,6 +76,9 @@ class TrajDataset:
         self.m_true = torch.tensor(np.stack([m[:Tmin] for m in mts]), device=device)
         self.wind = torch.tensor(np.stack([w[:Tmin] for w in wds]), device=device)
         self.n = self.gt.shape[0]
+        if wl and skipped:
+            print(f"[dataset:{split}] scenario whitelist {wl}: "
+                  f"kept {self.n}, skipped {skipped}")
         anch = torch.tensor(cfg.anchors, dtype=torch.float32, device=device)       # [4,3]
         # clean UWB ranges  [n,T,4]
         self.range_clean = torch.linalg.vector_norm(

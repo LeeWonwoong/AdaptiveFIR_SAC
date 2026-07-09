@@ -58,7 +58,7 @@ def main():
     obs = env.reset()
     ep_ret = torch.zeros(cfg.n_envs, device=dev)
     hist_ret, hist_rmse = [], []
-    err_acc, n_acc, l_acc, cnt = 0.0, 0.0, 0.0, 0
+    err_acc, ref_acc, n_acc, l_acc, cnt = 0.0, 0.0, 0.0, 0.0, 0
     nhi_acc = nlo_acc = 0.0
     nhi_cnt = nlo_cnt = 0
     losses = {"loss_q": 0.0, "loss_pi": 0.0, "alpha": 0.0}
@@ -75,6 +75,7 @@ def main():
         transitions += cfg.n_envs
         ep_ret += rew
         err_acc += float(info["err"].mean())
+        ref_acc += float(info.get("err_ref", info["err"]).mean())
         n_acc += float(info["N"].mean())
         l_acc += float(info["lam"].mean())
         cnt += 1
@@ -106,7 +107,8 @@ def main():
             ret = hist_ret[-1] if hist_ret else float("nan")
             nhi = nhi_acc / max(nhi_cnt, 1)
             nlo = nlo_acc / max(nlo_cnt, 1)
-            print(f"[{step:7d}] ret/ep {ret:9.1f} | rmse {rmse:.4f} m | "
+            rref = ref_acc / max(cnt, 1)
+            print(f"[{step:7d}] ret/ep {ret:9.1f} | rmse {rmse:.4f} (DI-FME {rref:.4f}) | "
                   f"N {n_acc/max(cnt,1):5.1f} lam {l_acc/max(cnt,1):.3f} | "
                   f"N|dist {nhi:4.1f} vs N|calm {nlo:4.1f} (gap {nlo-nhi:+4.1f}) | "
                   f"q {losses['loss_q']:.3f} pi {losses['loss_pi']:.3f} "

@@ -184,13 +184,43 @@ class Config:
     # Reward: r = -||p_gt - p_hat||  (pure localization error, L2 distance),
     # with a safety clip only (numerical guard, NOT reward engineering).
     reward_clip: float = 10.0           # clip per-step |cost| at 10 m (protects entropy auto-tuning)
+    reward_mode: str = "sq"             # "sq": r = -clip(||e||)^2  (DEFAULT)
+                                        #   quadratic cost == direct RMSE minimization
+                                        #   (the reported metric IS the square metric),
+                                        #   and it amplifies the disturbance-window signal
+                                        #   ~3x vs linear WITHOUT any baseline term:
+                                        #   window err 0.55 m vs nominal 0.18 m ->
+                                        #   linear ratio 3.1x, squared ratio 9.4x.
+                                        # "abs": legacy r = -clip(||e||).
+    ref_monitor_N: int = 14             # >0: run a parallel FIXED N=14, lam=1 filter
+                                        # (= DI-FME) on the identical stream for LOGGING
+                                        # ONLY — the live "rmse vs DI-FME" column and the
+                                        # eval table. NEVER enters the reward (user
+                                        # decision: reward stays absolute-error-based).
+                                        # 0 = off (saves ~2x env compute).
+    act_smooth_coef: float = 0.005      # small |dN| penalty (units of N-range) so the
+                                        # learned N(t) is regime-STEPS, not jitter — the
+                                        # paper figure needs Shmaliy-style plateaus.
+    train_scenario_types: tuple = ("nominal", "sustained_wind")
+                                        # dataset WHITELIST (FOCUSED RUN, user decision:
+                                        # single best scenario + nominal for contrast).
+                                        # sustained_wind has the steepest window curve
+                                        # (N=12 in-window costs 2.1x vs N*=6) -> the
+                                        # clearest N(t) swing figure. () = use all types.
     init_pos_noise: float = 0.05        # filter init: GT + N(0, sigma)
 
     # ══════════════════════════════════════════════════════════
     #  SAC (CleanRL-style)
     # ══════════════════════════════════════════════════════════
     total_steps: int = 300_000          # vector-env steps (x n_envs transitions)
-    start_random_steps: int = 1_000     # pure exploration before policy actions
+    start_random_steps: int = 6_000     # pure exploration before policy actions.
+                                        # WAS 1k -> the buffer barely sampled small-N
+                                        # actions inside disturbance windows before
+                                        # exploitation began. 6k vector steps x n_envs
+                                        # covers the whole (N,lam) box in windows, so the
+                                        # Q-function KNOWS N=6-in-window is good before
+                                        # the policy commits ("explore first" without
+                                        # corrupting the reward).
     learning_starts: int = 2_000        # transitions before updates
     updates_per_step: int = 8           # SGD updates per vector step
     batch_size: int = 512
