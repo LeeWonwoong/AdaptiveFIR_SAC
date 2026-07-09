@@ -149,7 +149,12 @@ def disturbance_intervals(sc: dict):
     for g in sc.get("gusts", []):
         out.append((g["start_s"], g["start_s"] + g["duration_s"], "gust"))
     if sc.get("sustained"):
-        out.append((0.0, sc["duration_s"], "sustained_wind"))
+        su = sc["sustained"]
+        if "start_s" in su:      # windowed (2026-07-09+): anchor at the TRUE onset
+            out.append((su["start_s"], su["start_s"] + su["duration_s"],
+                        "sustained_wind"))
+        else:                    # legacy full-trajectory sustained
+            out.append((0.0, sc["duration_s"], "sustained_wind"))
     for dp in sc.get("dropouts", []):
         out.append((dp["start_s"], dp["start_s"] + dp["duration_s"], "anchor_dropout"))
     for nb in sc.get("nlos_burst", []):

@@ -59,6 +59,8 @@ def main():
     ep_ret = torch.zeros(cfg.n_envs, device=dev)
     hist_ret, hist_rmse = [], []
     err_acc, n_acc, l_acc, cnt = 0.0, 0.0, 0.0, 0
+    nhi_acc = nlo_acc = 0.0
+    nhi_cnt = nlo_cnt = 0
     losses = {"loss_q": 0.0, "loss_pi": 0.0, "alpha": 0.0}
     t0 = time.time()
     transitions = 0
@@ -76,6 +78,16 @@ def main():
         n_acc += float(info["N"].mean())
         l_acc += float(info["lam"].mean())
         cnt += 1
+        # ── adaptation diagnostic: N conditioned on the UWB innovation level
+        #    the policy just saw (obs[:,0] = newest g_uwb, units of "x nominal").
+        #    A CONSTANT policy shows gap ~= 0; adaptation shows N|hi < N|lo.
+        _g = obs[:, 0]
+        _hi = _g > 1.5
+        _lo = _g < 1.2
+        if _hi.any():
+            nhi_acc += float(info["N"][_hi].sum()); nhi_cnt += int(_hi.sum())
+        if _lo.any():
+            nlo_acc += float(info["N"][_lo].sum()); nlo_cnt += int(_lo.sum())
         obs = obs2
 
         if info["ep_end"]:
@@ -92,8 +104,11 @@ def main():
             rmse = err_acc / max(cnt, 1)
             hist_rmse.append(rmse)
             ret = hist_ret[-1] if hist_ret else float("nan")
+            nhi = nhi_acc / max(nhi_cnt, 1)
+            nlo = nlo_acc / max(nlo_cnt, 1)
             print(f"[{step:7d}] ret/ep {ret:9.1f} | rmse {rmse:.4f} m | "
                   f"N {n_acc/max(cnt,1):5.1f} lam {l_acc/max(cnt,1):.3f} | "
+                  f"N|dist {nhi:4.1f} vs N|calm {nlo:4.1f} (gap {nlo-nhi:+4.1f}) | "
                   f"q {losses['loss_q']:.3f} pi {losses['loss_pi']:.3f} "
                   f"a {losses['alpha']:.3f} | {sps:.1f} vsteps/s", flush=True)
             with open(log_path, "a") as f:

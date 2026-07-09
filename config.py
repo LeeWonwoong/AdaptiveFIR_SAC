@@ -201,9 +201,15 @@ class Config:
     weight_decay: float = 0.0           # AdamW decoupled decay (0 => Adam과 동일; 필요시 1e-4)
     hidden: int = 64                    # MLP width (36-dim obs -> 64x64 sufficient)
     autotune_alpha: bool = True
-    target_entropy_scale: float = 0.5   # target_entropy = -scale * act_dim (0.5 keeps
+    target_entropy_scale: float = 1.0   # target_entropy = -scale * act_dim (0.5 keeps
                                         # more exploration; 1.0 collapsed alpha->0 here)
-    alpha_min: float = 0.02             # floor so entropy never fully vanishes
+    alpha_min: float = 0.08             # exploration floor. WAS 0.02 -> alpha hit the
+                                        # floor by ~2.5k steps and the policy froze into
+                                        # the best STATIC compromise (N=11, lam=0.83,
+                                        # rmse 0.182 = fixed-filter optimum) before ever
+                                        # discovering the CONDITIONAL gain (windows are
+                                        # ~10-15 % of steps; gain ~0.005 avg reward is
+                                        # invisible without sustained exploration).
     log_std_min: float = -5.0
     log_std_max: float = 2.0
     eval_every: int = 5_000             # vector steps
