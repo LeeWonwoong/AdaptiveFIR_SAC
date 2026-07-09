@@ -154,6 +154,16 @@ class Config:
                                         #  "UWB trouble (dropout/NLoS)" from "IMU trouble").
                                         # False → legacy per-channel residual vector.
     n_obs_groups: int = 3               # UWB / attitude / gyro
+    obs_group_scale: tuple = (1.0, 8.0, 12.0)
+                                        # ISAAC-MEASURED nominal whitened-norm levels
+                                        # (uwb ~1.1-1.3 | att ~2-16 pattern-dep | gyro
+                                        #  ~10-22): IMU innovations are MODEL-error
+                                        # dominated, so sigma-whitening alone puts them
+                                        # at 3-40 and the 4-sigma clip would PERMANENTLY
+                                        # saturate the IMU groups. Obs = norm/scale =
+                                        # "x nominal level"; disturbance reaches 2-3.5x
+                                        # (measured: wind uwb x3, turb gyro x2-3) with
+                                        # no saturation. Filter LS whitening unchanged.
     resid_clip: float = 4.0             # whitened-residual clip [sigma units].
                                         # WAS 1.0 -> SATURATION BUG: clip applies AFTER
                                         # sigma-whitening, so nominal N(0,1) channels sat at

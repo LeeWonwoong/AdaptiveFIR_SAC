@@ -37,6 +37,8 @@ class VectorReplayEnv:
             assert cfg.meas_dim == self.n_rng + 6, \
                 "channel-norm obs assumes z = [UWB x4 | attitude x3 | gyro x3]"
             self.feat = cfg.n_obs_groups + 2              # [g_uwb,g_att,g_gyr,N,lam]
+            self.grp_scale = torch.tensor(
+                cfg.obs_group_scale, device=device).view(1, -1)
         else:
             self.feat = cfg.meas_dim + 2                  # legacy per-channel width
         self.fme = WeightedFME(cfg, device, self.M)
@@ -118,8 +120,7 @@ class VectorReplayEnv:
     # ────────────────────────────── observation assembly
     def _push_feature(self, nu, N, lam):
         c = self.cfg.resid_clip
-        r = (nu / self.meas_sig).clamp(-c, c)
-        r = torch.nan_to_num(r, nan=0.0)                 # dropped anchor -> 0 channel
+        r = torch.nan_to_num(nu / self.meas_sig, nan=0.0)   # whitened, UNclipped
         if self.cfg.obs_channel_norms:
             # per-GROUP whitened innovation norms (user option 3): the policy
             # sees "how wrong is each sensor FAMILY" scale-free, so it can
@@ -130,8 +131,11 @@ class VectorReplayEnv:
             g_att = r[:, nr:nr + 3].norm(dim=1, keepdim=True) / (3.0 ** 0.5)
             g_gyr = r[:, nr + 3:nr + 6].norm(dim=1, keepdim=True) / (3.0 ** 0.5)
             head = torch.cat([g_uwb, g_att, g_gyr], dim=1)            # [M,3]
+            # normalize by Isaac-measured NOMINAL levels, then clip per GROUP:
+            # obs unit = "x nominal" (1 = calm, 2-3.5 = disturbance, cap 4).
+            head = (head / self.grp_scale).clamp(max=c)
         else:
-            head = r                                                  # legacy
+            head = r.clamp(-c, c)                                     # legacy
         feat = torch.cat([head, self._norm_N(N).unsqueeze(1),
                           self._norm_lam(lam).unsqueeze(1)], dim=1)   # [M,feat]
         self.stack = torch.roll(self.stack, 1, dims=1)
