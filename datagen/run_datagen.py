@@ -253,12 +253,39 @@ class DatagenApp:
                 if not self.mass_applied:
                     self._set_mass(m_true)
                     self.mass_applied = True
+                    carb.log_warn(
+                        f"[MASS] 🔴 TRUE mass {self.mass_nominal:.3f} → "
+                        f"{m_true:.3f} kg (+{100 * sc['mass']['delta']:.0f}%) "
+                        f"@ t={t_traj:.1f}s — PX4는 nominal 신뢰 (실물리 payload)")
 
             # scenario-driven wind drag force (applied in world frame)
             w_vel, w_force = self.wind.get(t_traj, self.physics_dt)
             if self.body_view is not None and np.any(w_force):
                 self.body_view.apply_forces(
                     np.array([w_force], dtype=np.float32), is_global=True)
+
+            # ── 상태 로그 (2 sim-s 주기, run_sim.py [RTF] 계승):
+            #    달성 배속 + 활성 바람 세기·항력을 함께 — "실제로 돌고 있고
+            #    외란이 실제로 인가되고 있음"을 콘솔에서 확인 가능하게.
+            if step % (physics_hz * 2) == 0:
+                _now = time.time()
+                if not hasattr(self, "_rtf_t0"):
+                    self._rtf_t0, self._rtf_s0 = _now, self.sim_time
+                else:
+                    _dw = _now - self._rtf_t0
+                    _ds = self.sim_time - self._rtf_s0
+                    if _dw > 0.5:
+                        _rtf = _ds / _dw
+                        _lag = "" if _rtf >= 0.95 * speed else "  ← compute 한계"
+                        _wv = float(np.linalg.norm(w_vel))
+                        _wtxt = (f" │ 💨 wind {_wv:.1f} m/s, "
+                                 f"drag {float(np.linalg.norm(w_force)):.2f} N"
+                                 if self.logger.active and _wv > 0.5 else "")
+                        _log = ("REC" if self.logger.active else "idle")
+                        print(f"[RTF] {_rtf:.2f}x/{speed:.1f}x "
+                              f"(sim={self.sim_time:.0f}s, {_log}){_wtxt}{_lag}",
+                              flush=True)
+                    self._rtf_t0, self._rtf_s0 = _now, self.sim_time
 
             do_render = (not self.args.headless) and (step % render_interval == 0)
             self.world.step(render=do_render)

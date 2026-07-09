@@ -91,6 +91,10 @@ class Commander(Node):
         self.scenario = None
         self.retry_count = 0
         self.MAX_RETRY = 3
+        # ── live-log state (online_rl_main-style console feedback) ──
+        self._airborne = False           # takeoff detected this traj
+        self._flag_state = {}            # disturbance-window ON/OFF edges
+        self._last_fly_log = -1e9        # throttle for FLY tracking line
         self.arm_resend_t = 0.0
 
         self.timer = self.create_timer(self.TICK, self._tick)
@@ -151,6 +155,36 @@ class Commander(Node):
         p, v, yaw = _ref(self.scenario["pattern"], t, c=c)
         return p, v, yaw
 
+    # ────────────────────────────── live-log helpers (online_rl_main style)
+    @staticmethod
+    def _scenario_desc(sc):
+        d = []
+        if sc.get("mass"):
+            d.append(f"payload +{100 * sc['mass']['delta']:.0f}% @ t={sc['mass']['onset_s']:.1f}s")
+        if sc.get("sustained"):
+            d.append(f"sustained wind {sc['sustained']['speed']:.1f} m/s")
+        for g in sc.get("gusts", []):
+            d.append(f"gust {g['speed']:.1f} m/s @ {g['start_s']:.1f}s+{g['duration_s']:.1f}s")
+        for tb in sc.get("turbulence", []):
+            d.append(f"turb x{tb['boost']:.1f} @ {tb['start_s']:.1f}s+{tb['duration_s']:.1f}s")
+        return "; ".join(d) if d else "clean (no disturbance)"
+
+    def _active_flags(self, t):
+        """disturbance windows active at traj time t -> {name: bool}."""
+        sc = self.scenario or {}
+        f = {}
+        if sc.get("mass"):
+            f[f"PAYLOAD+{100 * sc['mass']['delta']:.0f}%"] = t >= sc["mass"]["onset_s"]
+        if sc.get("sustained"):
+            f[f"WIND {sc['sustained']['speed']:.0f}m/s"] = True
+        for i, g in enumerate(sc.get("gusts", [])):
+            f[f"GUST{i} {g['speed']:.0f}m/s"] = \
+                g["start_s"] <= t <= g["start_s"] + g["duration_s"]
+        for i, tb in enumerate(sc.get("turbulence", [])):
+            f[f"TURB{i} x{tb['boost']:.1f}"] = \
+                tb["start_s"] <= t <= tb["start_s"] + tb["duration_s"]
+        return f
+
     # ────────────────────────────── state machine (50 Hz)
     def _tick(self):
         self.state_t += self.TICK
@@ -168,9 +202,15 @@ class Commander(Node):
             m = String()
             m.data = json.dumps(payload)
             self.pub_scenario.publish(m)
+            self._airborne = False
+            self._flag_state = {}
+            self._last_fly_log = -1e9
             self.get_logger().info(
-                f"[{self.q_idx + 1}/{len(self.queue)}] traj {traj_id} ({split}) "
-                f"type={self.scenario['type']} pattern={self.scenario['pattern']}")
+                f"┏━ [{self.q_idx + 1}/{len(self.queue)}] traj {traj_id} ({split}) "
+                f"━ {self.scenario['type']} / {self.scenario['pattern']} "
+                f"/ {self.scenario['duration_s']:.0f}s")
+            self.get_logger().info(
+                f"┗━ 외란: {self._scenario_desc(self.scenario)}")
             self._goto("STREAM")
 
         elif self.state == "STREAM":                 # offboard heartbeat >= 1.5 s
@@ -180,6 +220,7 @@ class Commander(Node):
             if self.state_t > 1.5:
                 self._arm_offboard()
                 self.arm_resend_t = self.state_t
+                self.get_logger().info("  [TAKEOFF] Arm + OFFBOARD 전환 시도")
                 self._goto("ASCEND")
 
         elif self.state == "ASCEND":                 # climb & settle at start point
@@ -189,9 +230,26 @@ class Commander(Node):
             if self.state_t - self.arm_resend_t > 2.0:      # re-send arm (repo habit)
                 self._arm_offboard()
                 self.arm_resend_t = self.state_t
+                if not self._airborne:
+                    self.get_logger().info("  [TAKEOFF] Arm 재시도")
+            # 이륙 감지 (online_rl_main 계승: 감지 순간 1회 로그)
+            if not self._airborne and self.gt_seen and self.gt_pos[2] > 0.5:
+                self._airborne = True
+                self.get_logger().info(
+                    f"  [TAKEOFF] 이륙 감지! alt={self.gt_pos[2]:.2f} m")
+            # 상승 진행 로그 (2s 주기)
+            if self.gt_seen and int(self.state_t / 2.0) != \
+                    int((self.state_t - self.TICK) / 2.0):
+                d0 = float(np.linalg.norm(self.gt_pos - p0))
+                self.get_logger().info(
+                    f"  [ASCEND {self.state_t:4.1f}s] alt={self.gt_pos[2]:.2f} m, "
+                    f"시작점까지 {d0:.2f} m (tol {self.args.settle_tol})")
             settled = self.gt_seen and \
                 np.linalg.norm(self.gt_pos - p0) < self.args.settle_tol
             if settled and self.state_t > 4.0:
+                self.get_logger().info(
+                    f"  ✅ 시작점 정착 (d={float(np.linalg.norm(self.gt_pos - p0)):.2f} m)"
+                    f" → FLY, 로깅 ON")
                 self._control("start_log")
                 self.fly_t = 0.0
                 self._goto("FLY")
@@ -205,6 +263,27 @@ class Commander(Node):
             p, v, yaw = self._pattern_ref(self.fly_t)
             self._send_setpoint_enu(p, v, yaw)
             self.fly_t += self.TICK
+            # ── 외란 창 전이 로그 (online_rl_main의 🔴 Attack ON / 🟢 OFF 계승):
+            #    시나리오의 각 외란 창이 열리고 닫히는 순간을 1회씩 찍는다.
+            flags = self._active_flags(self.fly_t)
+            for name, on in flags.items():
+                prev = self._flag_state.get(name, False)
+                if on and not prev:
+                    self.get_logger().warn(
+                        f"  🔴 외란 ON  @ t={self.fly_t:5.1f}s: {name}")
+                elif prev and not on:
+                    self.get_logger().info(
+                        f"  🟢 외란 OFF @ t={self.fly_t:5.1f}s: {name}")
+                self._flag_state[name] = on
+            # ── 추적 로그 (2s 주기): 위치·추적오차·활성 외란 ──
+            if self.gt_seen and self.fly_t - self._last_fly_log >= 2.0:
+                self._last_fly_log = self.fly_t
+                terr = float(np.linalg.norm(self.gt_pos - p))
+                on_txt = " ".join(n for n, v in flags.items() if v) or "nominal"
+                self.get_logger().info(
+                    f"  [FLY {self.fly_t:5.1f}/{self.scenario['duration_s']:.0f}s] "
+                    f"pos=({self.gt_pos[0]:5.2f},{self.gt_pos[1]:5.2f},"
+                    f"{self.gt_pos[2]:4.2f}) 추적err={terr:4.2f} m │ {on_txt}")
             # ── in-flight crash/runaway detection (online_rl_main heritage:
             #    its LEARNING state applied SOFT/WARM/HARD resets on crash).
             #    Under the FINAL strong disturbances (payload +60~90 %,
