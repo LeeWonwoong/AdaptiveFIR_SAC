@@ -315,6 +315,38 @@ def t5_handover_growing_window():
           f"then FME self-sustaining & deadbeat)")
 
 
+def t6_imu_fusion_structure():
+    """T6 — IMU-fusion measurement contract (z = [4 UWB | 3 att | 3 gyro]).
+    (a) h() is 10-D and its IMU part equals the state's eta/omega blocks.
+    (b) jac_h structure: UWB rows depend on POSITION only (attitude/rate
+        columns exactly 0 — ranges are body-independent point distances);
+        attitude rows = selector onto eta (cols 6:9 = I3, rest 0);
+        gyro rows = selector onto omega (cols 9:12 = I3, rest 0).
+    This is the contract that makes the observability rank reach 12
+    (UWB-only stalls at rank 10 = yaw unobservable -> est12 divergence)."""
+    cfg = Config()
+    assert cfg.meas_dim == 10 and cfg.est_dim == 12
+    m = UAVModel(cfg, DEV)
+    g = torch.Generator().manual_seed(7)
+    s = torch.randn(3, 12, generator=g) * 0.3
+    s[:, 0:3] = torch.tensor([5.0, 5.0, 1.5]) + 0.5 * torch.randn(3, 3, generator=g)
+    z = m.h(s)
+    assert z.shape == (3, 10)
+    assert torch.allclose(z[:, 4:7], s[:, 6:9], atol=1e-6)      # attitude pass-through
+    assert torch.allclose(z[:, 7:10], s[:, 9:12], atol=1e-6)    # gyro pass-through
+    C = m.jac_h(s)                                              # [3,10,12]
+    assert C.shape == (3, 10, 12)
+    assert C[:, 0:4, 3:12].abs().max().item() < 1e-6            # UWB rows: pos-only
+    eye3 = torch.eye(3).expand(3, 3, 3)
+    assert torch.allclose(C[:, 4:7, 6:9], eye3, atol=1e-6)      # att selector
+    assert C[:, 4:7, 0:6].abs().max().item() < 1e-6
+    assert C[:, 4:7, 9:12].abs().max().item() < 1e-6
+    assert torch.allclose(C[:, 7:10, 9:12], eye3, atol=1e-6)    # gyro selector
+    assert C[:, 7:10, 0:9].abs().max().item() < 1e-6
+    print("T6 IMU-fusion structure OK  (h 10-D pass-through; jac_h: UWB rows "
+          "pos-only, att/gyro rows pure selectors -> rank-12 observability)")
+
+
 if __name__ == "__main__":
     t1_jacobians()
     t2_deadbeat_unbiasedness()
@@ -322,4 +354,5 @@ if __name__ == "__main__":
     t3_lambda_responsiveness()
     t4_nonlinear_sanity()
     t5_handover_growing_window()
+    t6_imu_fusion_structure()
     print("\nALL FILTER TESTS PASSED")

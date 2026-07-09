@@ -13,7 +13,7 @@ PURE-FME contract (paper positioning):
     frozen linear model (verified numerically in tests, T2).
   - The tiny RELATIVE Tikhonov rows (eps ~ 1e-8) are numerical rank safety for
     the batched QR only; their bias is ~1e-8 and they are NOT a prior.
-  - When a measurement is rejected by the innovation gate, or the active
+  - When a measurement row is invalid (NaN dropout), or the active
     window lacks rank, the step outputs the propagated PREDICTION s_pred
     (time-update only) — standard filtering practice, no estimator switch.
   - The auxiliary EKF exists ONLY for the literature warmup: it serves until
@@ -58,7 +58,7 @@ class WeightedFME:
                            dtype=torch.float32, device=device)
         assert sig.numel() == cfg.meas_dim, "meas_sigma length != meas_dim"
         self.Dw = (1.0 / sig)                       # channel whitening weights
-        self.n_rng = min(4, cfg.meas_dim)           # gate applies to range channels
+        self.n_rng = min(4, cfg.meas_dim)           # UWB range channel count
         self._alloc()
 
     def _alloc(self):
@@ -70,7 +70,7 @@ class WeightedFME:
         self.C_buf = torch.zeros(M, W, nz, nx, device=d)
         self.z_buf = torch.zeros(M, W, nz, device=d)       # pseudo-measurement
         self.sp_buf = torch.zeros(M, W, nx, device=d)      # anchor (prediction) state at epoch
-        self.w_valid = torch.zeros(M, W, device=d)         # 1 if slot filled & not gated
+        self.w_valid = torch.zeros(M, W, device=d)         # 1 if slot filled & row-valid (NaN dropout)
         self.s_hat = torch.zeros(M, nx, device=d)
         self.filled = torch.zeros(M, dtype=torch.long, device=d)
         self.lag = torch.arange(W, device=d).float()
@@ -86,7 +86,6 @@ class WeightedFME:
             getattr(self.cfg, "meas_sigma", (0.05,) * nz),
             dtype=torch.float32, device=d) ** 2)
         self.handed = torch.zeros(M, dtype=torch.bool, device=d)   # handover latch
-        self.gate_esc = torch.zeros(M, device=d)   # consecutive full-reject count (gate escalation)
         self.s_lin = torch.zeros(M, nx, device=d)    # linearization anchor track (aux EKF)
 
     # -------------------------------------------------- reset
@@ -99,7 +98,6 @@ class WeightedFME:
         self.w_valid[idx] = 0.0
         self.s_hat[idx] = s0
         self.filled[idx] = 0
-        self.gate_esc[idx] = 0.0
         self.A_acc[idx] = self.eyeh
         self.u_acc[idx] = 0.0
         self.aux_P[idx] = 0.1 * self.eyeh
@@ -155,35 +153,20 @@ class WeightedFME:
         # ── measurement epoch ──
         C = m.jac_h(s_pred)                             # [M,4,12]
         nu = z - m.h(s_pred)                            # exact nonlinear innovation
-        # per-anchor validity: dropped anchor (scenario) arrives as NaN range;
-        # NLOS / outlier arrives as a gate-exceeding residual. Both are
-        # excluded ROW-WISE (DI-FME intermittent-dropout handling), so a single
-        # bad anchor never poisons the other three.
-        #
-        # ADAPTIVE GATE RE-ACQUISITION: with dynamics-only prediction the
-        # attitude drifts (no IMU), so over a long horizon the propagated
-        # innovation can exceed the nominal gate on ALL anchors at once —
-        # then every row is dropped, the state coasts open-loop, and the
-        # error runs away (the multirate divergence). To prevent a permanent
-        # measurement blackout we widen the gate geometrically for as long as
-        # the whole epoch keeps being rejected (2m -> 4m -> 8m -> ...), and
-        # snap back to the nominal gate as soon as any anchor is re-acquired.
-        # A genuine single-anchor NLoS/dropout never triggers this (the other
-        # three anchors keep the epoch valid, so the counter stays at 0).
-        base_gate = self.cfg.innov_gate
-        gmul = torch.pow(2.0, self.gate_esc.clamp(max=6).double()).float()  # [M]
-        eff_gate = base_gate * gmul                                          # [M]
-        finite = torch.isfinite(nu)
-        # gate applies to UWB range channels only (first n_rng); IMU channels
-        # (attitude/gyro) are never dropped — they are the fusion backbone.
-        nr = self.n_rng
-        gate_ok = finite & (nu.abs() < eff_gate.view(-1, 1))               # [M,nz]
-        anch_ok = finite.clone()
-        anch_ok[:, :nr] = gate_ok[:, :nr]                                   # UWB gated
-        # (IMU rows keep anch_ok = finite = True unless NaN)
-        uwb_rej = (~anch_ok[:, :nr]).all(dim=1) & finite[:, :nr].any(dim=1)  # all UWB over gate
-        self.gate_esc = torch.where(uwb_rej, self.gate_esc + 1.0,
-                                    torch.zeros_like(self.gate_esc))
+        # per-row validity = FINITENESS ONLY: a dropped anchor (scenario)
+        # arrives as a NaN range and is excluded ROW-WISE (DI-FME
+        # intermittent-dropout handling), so a lost anchor never poisons the
+        # other rows.
+        # NO magnitude gate (REMOVED by design, 2026-07-09): the final
+        # scenario mix (nominal / mass_step / sustained_wind / turbulence)
+        # contains no NLoS outliers — a large UWB innovation there is
+        # MODEL-ERROR signal (payload sag, wind push) that (a) the window LS
+        # needs in order to correct the drifting prediction and (b) the SAC
+        # policy needs as its observation; a magnitude gate would censor
+        # both. The old gate_esc escalation existed only to un-stick the
+        # gate's own all-rows-rejected blackout in the pre-IMU (dynamics-only
+        # attitude-drift) era; with IMU fusion that failure mode is gone.
+        anch_ok = torch.isfinite(nu)
         nu = torch.nan_to_num(nu, nan=0.0)
         aw = anch_ok.float().unsqueeze(-1)              # [M,nz,1]
         C = C * aw                                      # zero dropped rows

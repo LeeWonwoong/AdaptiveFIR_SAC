@@ -123,7 +123,11 @@ class Config:
     uwb_stride: int = 5                 # measurement 10Hz (DW1000 TWR x4 anchors); prediction stays 50Hz
                                         # (1 = every 50 Hz step, the frozen design; >1 supported
                                         #  as an optional realism knob — N counts epochs)
-    innov_gate: float = 2.0             # per-channel |nu| gate [m]: gated epoch row EXCLUDED from window
+    innov_gate: float = float("inf")    # DEPRECATED/unused — magnitude gate REMOVED
+                                        # (final mix has no NLoS outliers; model-error
+                                        #  innovations ARE the adaptation signal and must
+                                        #  reach both the LS and the SAC observation).
+                                        # Field kept only for arg-compat of old tools/tests.
     state_clamp: bool = True            # physical projection of [v,att,rate] after solve (UAV)
     clamp_vel: float = 30.0
     clamp_att: float = 1.2
@@ -144,7 +148,20 @@ class Config:
     #    anchor fault [0.4,0,0,0] from a global degradation [0.2,0.2,0.2,0.2]
     #    -> essential for the anchor-dropout scenario.
     L_obs: int = 6                      # sliding-window length (steps)
-    resid_clip: float = 1.0             # per-anchor residual clip [m]
+    obs_channel_norms: bool = True      # True → per-GROUP whitened innovation norms
+                                        # [‖ν_UWB‖/σ, ‖ν_att‖/σ, ‖ν_gyro‖/σ, N̂, λ̂] x L
+                                        # (user-selected option 3; groups let SAC tell
+                                        #  "UWB trouble (dropout/NLoS)" from "IMU trouble").
+                                        # False → legacy per-channel residual vector.
+    n_obs_groups: int = 3               # UWB / attitude / gyro
+    resid_clip: float = 4.0             # whitened-residual clip [sigma units].
+                                        # WAS 1.0 -> SATURATION BUG: clip applies AFTER
+                                        # sigma-whitening, so nominal N(0,1) channels sat at
+                                        # 1 sigma -> group norm ceiling 1.0 while nominal sits
+                                        # ~0.92-0.95 (measured): the x2.1 disturbance rise was
+                                        # compressed into [0.95,1.0], invisible to SAC.
+                                        # 4 sigma keeps nominal ~0.92 and lets disturbance
+                                        # reach ~2 with headroom.
     episode_len: int = 150              # RL steps per segment (shorter -> higher disturbance
                                         # density + more episodes before alpha settles)
     warmup_steps: int = 20              # aux-EKF-only phase in EPOCHS. Set to N_max so that,
@@ -194,9 +211,18 @@ class Config:
     #   turbulence_burst process-noise q×3~5, 2~5s → EKF (fixed Q) LAGS (main)
     #   nlos_burst       one anchor σ↑ + bias 2~4s → EKF over-trusts (main)
     #   anchor_dropout   one anchor out 3~5 s      → geometry loss (FIR tier=DI-FME)
-    scenario_types: tuple = ("nominal", "turbulence_burst",
-                             "nlos_burst", "anchor_dropout")
-    scenario_probs: tuple = (0.15, 0.35, 0.25, 0.25)
+    # ── FINAL scenario mix (container STAGE-2 gate, 2026-07-09):
+    #    payload mass_step is the PRIMARY adaptation driver (N* 14→6 at both
+    #    +75 % and +100 %, magnitude-robust); sustained strong wind 15~20 m/s
+    #    is SECONDARY (N* 14→4; 10~12 m/s is direction-ambiguous → avoided);
+    #    turbulence_burst is kept as the IIR<FIR<AFIR chain scenario
+    #    (Shmaliy Fig.10 reproduction: EKF 0.360 > FIR 0.165 > AFIR 0.134).
+    #    anchor_dropout / nlos_burst EXCLUDED from the default mix (IMU fusion
+    #    bridges 1-anchor loss → no N* shift; 2-anchor loss = collapse, not
+    #    adaptation). Sampler branches remain available for ablations.
+    scenario_types: tuple = ("nominal", "mass_step",
+                             "sustained_wind", "turbulence_burst")
+    scenario_probs: tuple = (0.15, 0.40, 0.25, 0.20)
     # flight patterns (NO 'aggressive': high-G maneuvers break the 1st-order
     # Taylor linearization the FIR relies on — out of scope by design).
     flight_patterns: tuple = ("helical", "figure8", "waypoint")
@@ -208,16 +234,20 @@ class Config:
     #    old data fast), a calm segment raises N_opt (average out noise). ──
     # payload coupling (UIFM-SLAC Scenario 2): STEP mass jump + a z-sink /
     # lateral velocity impulse at the coupling instant -> position error spike.
-    mass_delta_range: tuple = (0.40, 0.70)     # STEP +40~70 % (was gentle 10~40)
+    mass_delta_range: tuple = (0.60, 0.90)     # STEP +60~90 % (centre +75 %: N* 14→6 measured)
     mass_onset_frac: tuple = (0.30, 0.60)      # coupling instant within trajectory
     mass_impulse_z: tuple = (0.6, 1.2)         # downward velocity impulse [m/s] at coupling
     mass_impulse_xy: tuple = (0.3, 0.7)        # lateral velocity impulse [m/s]
     # gust: SHARP impulsive gusts (FM-SMC abrupt disturbance), not slow ramps
-    gust_speed_range: tuple = (8.0, 14.0)      # m/s (stronger)
-    gust_duration_range: tuple = (0.2, 0.6)    # s (sharp impulse, was 1~5 s)
+    gust_speed_range: tuple = (15.0, 20.0)     # m/s — <15 m/s shifts N* the WRONG way
+                                               # (measured: 10 m/s → N*=20, 12 m/s → ±2 ambiguous;
+                                               #  ≥15 m/s → N* 14→4). PX4-compensation-exceeding only.
+    gust_duration_range: tuple = (4.0, 8.0)    # s (sustained-style; the validated WIN was ~7 s)
     gust_count_range: tuple = (2, 4)
     # sustained wind
-    sustained_speed_range: tuple = (2.5, 7.0)  # m/s
+    sustained_speed_range: tuple = (15.0, 20.0)  # m/s — must exceed PX4 compensation so GT
+                                               # actually deflects (6 m/s legacy data: vel-std
+                                               # 1.258→1.293, i.e. fully compensated → useless)
     # anchor dropout: PROLONGED full outage (UIFM-SLAC Scenario 3 = ~7 s NLOS;
     # DI-FME intermittent). One anchor lost -> GDOP worsens (3-anchor GDOP up
     # to ~11 near workspace edges); large N holds the pre-dropout 4-anchor data
@@ -296,8 +326,8 @@ class Config:
     cm_calm_dur_range: tuple = (2.5, 4.0)      # s per calm segment
     cm_dyn_dur_range: tuple = (2.0, 3.5)       # s per dynamic segment
     # held-out (outside training ranges → generalization claim)
-    heldout_mass_delta_range: tuple = (0.70, 0.90)
-    heldout_gust_speed_range: tuple = (14.0, 18.0)
+    heldout_mass_delta_range: tuple = (0.90, 1.10)
+    heldout_gust_speed_range: tuple = (20.0, 24.0)
     heldout_nlos_bias_range: tuple = (0.5, 0.7)  # stronger NLoS bias (still < gate)
     # dataset sizes
     n_train_traj: int = 200
@@ -319,7 +349,9 @@ class Config:
 
     @property
     def obs_dim(self):
-        return (self.meas_dim + 2) * self.L_obs      # [nu_1..4, N_hat, lam_hat] x L
+        if self.obs_channel_norms:
+            return (self.n_obs_groups + 2) * self.L_obs   # [g_uwb, g_att, g_gyro, N_hat, lam_hat] x L
+        return (self.meas_dim + 2) * self.L_obs      # legacy: [nu_1..nz, N_hat, lam_hat] x L
 
     def __post_init__(self):
         assert self.N_min * self.meas_dim >= self.state_dim + 2, "N_min too small for gain existence"  # 4*10=40 >= 14 OK

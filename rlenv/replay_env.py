@@ -32,7 +32,13 @@ class VectorReplayEnv:
         self.M = cfg.n_envs
         self.L = cfg.L_obs
         self.nz = cfg.meas_dim
-        self.feat = cfg.meas_dim + 2                      # per-step feature width
+        self.n_rng = len(cfg.anchors)                     # UWB channel count (4)
+        if cfg.obs_channel_norms:
+            assert cfg.meas_dim == self.n_rng + 6, \
+                "channel-norm obs assumes z = [UWB x4 | attitude x3 | gyro x3]"
+            self.feat = cfg.n_obs_groups + 2              # [g_uwb,g_att,g_gyr,N,lam]
+        else:
+            self.feat = cfg.meas_dim + 2                  # legacy per-channel width
         self.fme = WeightedFME(cfg, device, self.M)
         self.rng = torch.Generator(device=device)
         self.rng.manual_seed(seed)
@@ -71,19 +77,31 @@ class VectorReplayEnv:
 
     # ────────────────────────────── measurement (dropout via NaN rows)
     def _measure(self):
-        """noisy z = 4 UWB ranges at current pointers (per-episode sigma).
-        Anchor dropout is a dataset scenario: a dropped anchor's clean range
-        is NaN, so the measurement row is NaN -> the filter's innovation gate
-        excludes it (as in DI-FME's intermittent-dropout handling)."""
-        _, rc, _, _ = self.ds.get(self.ti, self.t)
+        """noisy z [M,meas_dim] = [4 UWB ranges | 3 attitude | 3 gyro].
+        UWB part is UNCHANGED: per-episode sigma randomization + NLoS
+        scale/bias + dropout-NaN (NaN row -> the filter's innovation gate
+        excludes it, DI-FME intermittent-dropout handling).
+        IMU part (meas_dim=10 fusion mode): synthesized ONLINE from the GT
+        log. run_datagen records the drone's TRUE attitude/rates under real
+        physical disturbance (set_masses payload / apply_forces wind), so the
+        disturbance response is physically present in these channels; only
+        the SENSOR noise (FCU attitude est. / gyro grade, cfg.meas_sigma[4:])
+        is added here."""
+        _, rc, _, gt = self.ds.get(self.ti, self.t)
         scale = 1.0
         bias = 0.0
         if hasattr(self.ds, "noise_scale"):                 # NLoS per-anchor σ↑
             scale = self.ds.noise_scale[self.ti, self.t]    # [M,4]
         if hasattr(self.ds, "range_bias"):                  # NLoS multipath bias
             bias = self.ds.range_bias[self.ti, self.t]      # [M,4]
-        return rc + bias + self.sigma * scale * torch.randn(
+        z_uwb = rc + bias + self.sigma * scale * torch.randn(
             self.M, rc.shape[1], generator=self.rng, device=self.dev)
+        if self.nz <= rc.shape[1]:                          # legacy UWB-only mode
+            return z_uwb
+        sig_imu = self.meas_sig[rc.shape[1]:self.nz]        # [6] att3 + gyro3
+        z_imu = gt[:, 6:12] + sig_imu * torch.randn(
+            self.M, self.nz - rc.shape[1], generator=self.rng, device=self.dev)
+        return torch.cat([z_uwb, z_imu], dim=1)
 
     def _epoch(self, N, lam):
         stride = max(1, self.cfg.uwb_stride)
@@ -102,7 +120,19 @@ class VectorReplayEnv:
         c = self.cfg.resid_clip
         r = (nu / self.meas_sig).clamp(-c, c)
         r = torch.nan_to_num(r, nan=0.0)                 # dropped anchor -> 0 channel
-        feat = torch.cat([r, self._norm_N(N).unsqueeze(1),
+        if self.cfg.obs_channel_norms:
+            # per-GROUP whitened innovation norms (user option 3): the policy
+            # sees "how wrong is each sensor FAMILY" scale-free, so it can
+            # tell UWB trouble (NLoS/dropout) from dynamics trouble (payload/
+            # wind -> attitude+gyro innovations rise; measured x2.1 in window).
+            nr = self.n_rng
+            g_uwb = r[:, 0:nr].norm(dim=1, keepdim=True) / (nr ** 0.5)
+            g_att = r[:, nr:nr + 3].norm(dim=1, keepdim=True) / (3.0 ** 0.5)
+            g_gyr = r[:, nr + 3:nr + 6].norm(dim=1, keepdim=True) / (3.0 ** 0.5)
+            head = torch.cat([g_uwb, g_att, g_gyr], dim=1)            # [M,3]
+        else:
+            head = r                                                  # legacy
+        feat = torch.cat([head, self._norm_N(N).unsqueeze(1),
                           self._norm_lam(lam).unsqueeze(1)], dim=1)   # [M,feat]
         self.stack = torch.roll(self.stack, 1, dims=1)
         self.stack[:, 0] = feat
