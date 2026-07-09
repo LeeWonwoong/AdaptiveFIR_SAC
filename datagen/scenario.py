@@ -60,8 +60,10 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
             if t0 > hi:
                 break
             start = float(rng.uniform(t0, max(t0 + 0.1, hi)))
-            out.append({"start_s": start, "duration_s": d,
-                        "boost": float(rng.uniform(*cfg.turb_boost_range))})
+            b = float(rng.uniform(*cfg.turb_boost_range))
+            out.append({"start_s": start, "duration_s": d, "boost": b,
+                        "wind_sigma": float(
+                            getattr(cfg, "turb_wind_sigma_per_boost", 2.5) * b)})
             t0 = start + d + 1.0
         return out
 
@@ -117,8 +119,12 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
     elif stype == "gust":
         sc["gusts"] = _gusts()
     elif stype == "sustained_wind":
+        _sd = float(rng.uniform(*getattr(cfg, "sustained_duration_range", (8.0, 15.0))))
+        _s0 = float(rng.uniform(*getattr(cfg, "sustained_onset_frac", (0.20, 0.50))) * dur)
+        _s0 = min(_s0, max(0.0, 0.9 * dur - _sd))          # keep window inside traj
         sc["sustained"] = {"speed": float(rng.uniform(*cfg.sustained_speed_range)),
-                           "dir_rad": float(rng.uniform(0, 2 * np.pi))}
+                           "dir_rad": float(rng.uniform(0, 2 * np.pi)),
+                           "start_s": _s0, "duration_s": _sd}
     elif stype == "anchor_dropout":
         sc["dropouts"] = _dropouts()
     elif stype == "nlos_burst":

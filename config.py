@@ -245,6 +245,13 @@ class Config:
     gust_duration_range: tuple = (4.0, 8.0)    # s (sustained-style; the validated WIN was ~7 s)
     gust_count_range: tuple = (2, 4)
     # sustained wind
+    # WINDOWED sustained wind (2026-07-09): whole-trajectory wind teaches the
+    # policy nothing about TRANSITIONS (a constant N=4 suffices within such a
+    # trajectory); adaptation value lives at regime edges. A mid-trajectory
+    # window (validated N_opt shift used a ~7 s window) gives calm -> onset ->
+    # N shrink -> offset -> N recover, twice per trajectory.
+    sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
+    sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
     sustained_speed_range: tuple = (15.0, 20.0)  # m/s — must exceed PX4 compensation so GT
                                                # actually deflects (6 m/s legacy data: vel-std
                                                # 1.258→1.293, i.e. fully compensated → useless)
@@ -260,6 +267,10 @@ class Config:
     #    accumulates in the recursive filter). Amplitude bounded → Taylor valid.
     turb_count_range: tuple = (2, 4)
     turb_duration_range: tuple = (2.0, 5.0)    # s per turbulence burst
+    turb_wind_sigma_per_boost: float = 2.0     # Isaac mapping: turbulent WIND std [m/s]
+                                               # = knob x boost -> 10~16 m/s buffeting (clip 1.5σ)
+                                               # (variance-preserving OU; must be validated
+                                               #  in Isaac: crash rate & GT deflection)
     turb_boost_range: tuple = (5.0, 8.0)       # σ multiplier (eff 7.5~12 m/s²): below
                                                # ~7 the EKF still tracks (position is
                                                # UWB-observed) → no IIR<FIR separation
