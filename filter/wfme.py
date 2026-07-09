@@ -195,16 +195,27 @@ class WeightedFME:
         # effect to pre-handover environments so a handed-over env's EKF state
         # can never leak back into the delivered estimate or the linearization.
         warm = (~self.handed).view(-1, 1, 1).float()    # [M,1,1] 1 while warming
-        P_pred = torch.bmm(torch.bmm(Aep, self.aux_P),
-                           Aep.transpose(1, 2)) + self.aux_Q
-        Sm = torch.bmm(torch.bmm(C, P_pred), C.transpose(1, 2)) + self.aux_R
-        K = torch.bmm(P_pred, torch.linalg.solve(Sm, C).transpose(1, 2))
+        # fp64 covariance path + symmetrization (warmup-only, cost negligible):
+        # in fp32 (worse with TF32 on CUDA) the (I-KC)P form intermittently
+        # loses positive-definiteness -> garbage K -> bad handover states that
+        # a lam=1 filter drags for a whole episode (seen as a climbing DI-FME
+        # monitor on GPU; identical CPU run stayed flat). fp64 + P=(P+P^T)/2
+        # removes the failure mode; the deadbeat FME solve was already fp64.
+        Ad, Cd = Aep.double(), C.double()
+        nud = torch.nan_to_num(nu, nan=0.0).double()
+        P_pred = torch.bmm(torch.bmm(Ad, self.aux_P.double()),
+                           Ad.transpose(1, 2)) + self.aux_Q.double()
+        Sm = torch.bmm(torch.bmm(Cd, P_pred), Cd.transpose(1, 2)) + self.aux_R.double()
+        K = torch.bmm(P_pred, torch.linalg.solve(Sm, Cd).transpose(1, 2))
         okc = ok.unsqueeze(1)
-        s_ekf = s_pred + okc * torch.bmm(K, nu.unsqueeze(-1)).squeeze(-1)
-        P_upd = torch.bmm(self.eyeh - torch.bmm(K, C), P_pred)
-        aux_P_next = ok.view(-1, 1, 1) * P_upd + (1 - ok.view(-1, 1, 1)) * P_pred
+        s_ekf = s_pred + okc * torch.bmm(K, nud.unsqueeze(-1)).squeeze(-1).float()
+        P_upd = torch.bmm(self.eyeh.double() - torch.bmm(K, Cd), P_pred)
+        P_upd = 0.5 * (P_upd + P_upd.transpose(1, 2))
+        okd = ok.view(-1, 1, 1).double()
+        aux_P_next = okd * P_upd + (1.0 - okd) * P_pred
         # freeze aux covariance once handed over
-        self.aux_P = warm * aux_P_next + (1.0 - warm) * self.aux_P
+        self.aux_P = (warm.double() * aux_P_next
+                      + (1.0 - warm.double()) * self.aux_P.double()).float()
 
         # pure FME solve on the epoch window
         if Np is None:                      # RL interface passes only (N, lam);

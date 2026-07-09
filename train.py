@@ -21,8 +21,13 @@ from rl.buffer import TensorReplayBuffer
 
 def apply_tf32_policy():
     # NN matmuls may use TF32; filter code calls linalg in FP32 explicitly.
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+    # TF32 DISABLED (2026-07-09): TF32's 10-bit mantissa on the aux-EKF
+    # covariance chain (P=APA^T+Q, (I-KC)P) on CUDA intermittently breaks P's
+    # positive-definiteness -> garbage K -> bad handover states; observed as a
+    # linearly climbing DI-FME monitor on GPU while the identical run on CPU
+    # stayed flat at 0.32. The SAC nets are tiny MLPs, so TF32 bought nothing.
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
 
 
 def main():
@@ -59,6 +64,8 @@ def main():
     ep_ret = torch.zeros(cfg.n_envs, device=dev)
     hist_ret, hist_rmse = [], []
     err_acc, ref_acc, n_acc, l_acc, cnt = 0.0, 0.0, 0.0, 0.0, 0
+    nsd_acc = 0.0
+    refbig = 0
     nhi_acc = nlo_acc = 0.0
     nhi_cnt = nlo_cnt = 0
     losses = {"loss_q": 0.0, "loss_pi": 0.0, "alpha": 0.0}
@@ -76,7 +83,9 @@ def main():
         ep_ret += rew
         err_acc += float(info["err"].mean())
         ref_acc += float(info.get("err_ref", info["err"]).mean())
+        refbig += int((info.get("err_ref", info["err"]) > 2.0).sum())
         n_acc += float(info["N"].mean())
+        nsd_acc += float(info["N"].float().std())
         l_acc += float(info["lam"].mean())
         cnt += 1
         # ── adaptation diagnostic: N conditioned on the UWB innovation level
@@ -108,8 +117,8 @@ def main():
             nhi = nhi_acc / max(nhi_cnt, 1)
             nlo = nlo_acc / max(nlo_cnt, 1)
             rref = ref_acc / max(cnt, 1)
-            print(f"[{step:7d}] ret/ep {ret:9.1f} | rmse {rmse:.4f} (DI-FME {rref:.4f}) | "
-                  f"N {n_acc/max(cnt,1):5.1f} lam {l_acc/max(cnt,1):.3f} | "
+            print(f"[{step:7d}] ret/ep {ret:9.1f} | rmse {rmse:.4f} (DI-FME {rref:.4f}, div {refbig}) | "
+                  f"N {n_acc/max(cnt,1):5.1f}±{nsd_acc/max(cnt,1):3.1f} lam {l_acc/max(cnt,1):.3f} | "
                   f"N|dist {nhi:4.1f} vs N|calm {nlo:4.1f} (gap {nlo-nhi:+4.1f}) | "
                   f"q {losses['loss_q']:.3f} pi {losses['loss_pi']:.3f} "
                   f"a {losses['alpha']:.3f} | {sps:.1f} vsteps/s", flush=True)
