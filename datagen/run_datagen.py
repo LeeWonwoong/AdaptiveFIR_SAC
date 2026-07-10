@@ -247,16 +247,26 @@ class DatagenApp:
             # scenario-driven TRUE mass
             m_true = self.mass_nominal
             sc = self.scenario or {}
-            if sc.get("mass") and self.logger.active and \
-                    t_traj >= sc["mass"]["onset_s"]:
-                m_true = self.mass_nominal * (1.0 + sc["mass"]["delta"])
-                if not self.mass_applied:
-                    self._set_mass(m_true)
-                    self.mass_applied = True
+            if sc.get("mass") and self.logger.active:
+                _m = sc["mass"]
+                _end = _m["onset_s"] + _m.get("duration_s", 1e9)   # legacy: to end
+                _in_win = _m["onset_s"] <= t_traj <= _end
+                if _in_win:
+                    m_true = self.mass_nominal * (1.0 + _m["delta"])
+                    if not self.mass_applied:
+                        self._set_mass(m_true)
+                        self.mass_applied = True
+                        carb.log_warn(
+                            f"[MASS] 🔴 PICKUP {self.mass_nominal:.3f} → "
+                            f"{m_true:.3f} kg (+{100 * _m['delta']:.0f}%) "
+                            f"@ t={t_traj:.1f}s — PX4는 nominal 신뢰 (실물리 payload)")
+                elif self.mass_applied and t_traj > _end:
+                    self._set_mass(self.mass_nominal)
+                    self.mass_applied = False
                     carb.log_warn(
-                        f"[MASS] 🔴 TRUE mass {self.mass_nominal:.3f} → "
-                        f"{m_true:.3f} kg (+{100 * sc['mass']['delta']:.0f}%) "
-                        f"@ t={t_traj:.1f}s — PX4는 nominal 신뢰 (실물리 payload)")
+                        f"[MASS] 🟢 RELEASE → {self.mass_nominal:.3f} kg "
+                        f"@ t={t_traj:.1f}s (창 {_m['onset_s']:.1f}"
+                        f"~{_end:.1f}s 종료)")
 
             # scenario-driven wind drag force (applied in world frame)
             w_vel, w_force = self.wind.get(t_traj, self.physics_dt)

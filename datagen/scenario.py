@@ -13,8 +13,15 @@ Each trajectory gets a scenario dict (fully recorded in meta.json):
 import numpy as np
 
 
-def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dict:
-    stype = rng.choice(cfg.scenario_types, p=np.array(cfg.scenario_probs))
+def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
+                    heldout_idx=None) -> dict:
+    plan = getattr(cfg, "heldout_plan", None)
+    _plan_row = None
+    if heldout and plan and heldout_idx is not None:
+        _plan_row = plan[heldout_idx % len(plan)]
+        stype = _plan_row[0]
+    else:
+        stype = rng.choice(cfg.scenario_types, p=np.array(cfg.scenario_probs))
     pattern = rng.choice(cfg.flight_patterns)
     dur = float(cfg.traj_duration_s)
     sc = {"type": str(stype), "pattern": str(pattern), "duration_s": dur,
@@ -28,8 +35,15 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
     nlos_bias_rng = cfg.heldout_nlos_bias_range if heldout else cfg.nlos_bias_range
 
     def _mass():
-        return {"delta": float(rng.uniform(*mass_rng)),
-                "onset_s": float(rng.uniform(*cfg.mass_onset_frac) * dur),
+        _mr = (_plan_row[1], _plan_row[2]) if (_plan_row and
+                                               _plan_row[0] == "mass_step") else mass_rng
+        _on = float(rng.uniform(*cfg.mass_onset_frac) * dur)
+        _dr = getattr(cfg, "mass_window_duration_range", None)
+        _du = float(rng.uniform(*_dr)) if _dr else float(dur - _on)
+        _du = min(_du, dur - _on - 2.0)          # release inside the traj
+        return {"delta": float(rng.uniform(*_mr)),
+                "duration_s": _du,
+                "onset_s": _on,
                 "impulse_z": float(rng.uniform(*cfg.mass_impulse_z)),
                 "impulse_xy": float(rng.uniform(*cfg.mass_impulse_xy)),
                 "impulse_dir": float(rng.uniform(0, 2 * np.pi))}
@@ -122,7 +136,12 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False) -> dic
         _sd = float(rng.uniform(*getattr(cfg, "sustained_duration_range", (8.0, 15.0))))
         _s0 = float(rng.uniform(*getattr(cfg, "sustained_onset_frac", (0.20, 0.50))) * dur)
         _s0 = min(_s0, max(0.0, 0.9 * dur - _sd))          # keep window inside traj
-        sc["sustained"] = {"speed": float(rng.uniform(*cfg.sustained_speed_range)),
+        _sr = (_plan_row[1], _plan_row[2]) if (_plan_row and
+                _plan_row[0] == "sustained_wind") else cfg.sustained_speed_range
+        _vr = getattr(cfg, "wind_vertical_ratio", None)
+        _vert = float(rng.uniform(*_vr)) * float(rng.choice([-1.0, 1.0])) if _vr else 0.0
+        sc["sustained"] = {"speed": float(rng.uniform(*_sr)),
+                           "vert_ratio": _vert,
                            "dir_rad": float(rng.uniform(0, 2 * np.pi)),
                            "start_s": _s0, "duration_s": _sd}
     elif stype == "anchor_dropout":
@@ -145,7 +164,10 @@ def disturbance_intervals(sc: dict):
     """[(t0, t1, label), ...] for figure shading / segment metrics."""
     out = []
     if sc.get("mass"):
-        out.append((sc["mass"]["onset_s"], sc["duration_s"], "mass_step"))
+        _m = sc["mass"]
+        _end = _m["onset_s"] + _m["duration_s"] if "duration_s" in _m \
+            else sc["duration_s"]                 # legacy: persists to the end
+        out.append((_m["onset_s"], _end, "mass_step"))
     for g in sc.get("gusts", []):
         out.append((g["start_s"], g["start_s"] + g["duration_s"], "gust"))
     if sc.get("sustained"):

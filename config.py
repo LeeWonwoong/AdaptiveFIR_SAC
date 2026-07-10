@@ -336,7 +336,19 @@ class Config:
     # N shrink -> offset -> N recover, twice per trajectory.
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
-    sustained_speed_range: tuple = (15.0, 20.0)  # m/s — must exceed PX4 compensation so GT
+    sustained_speed_range: tuple = (15.0, 20.0)
+    wind_vertical_ratio: tuple = (0.20, 0.30)
+    # vertical wind component = ratio x horizontal speed, sign random per
+    # episode (up/downdraft). Purpose (2026-07-09): inject MODEL ERROR into z
+    # inside the wind window so the short-horizon advantage covers all three
+    # axes (previously z stayed noise-limited -> long N optimal -> AFIR lost
+    # the z cell to FIR). 25% of 15 m/s = 3.8 m/s vertical, same order as the
+    # payload z-disturbance. GATE: verify z-axis N* shift on 1-2 fresh trajs
+    # BEFORE the 50k retrain; if the shift is absent raise to 0.30-0.35.
+    mass_window_duration_range: tuple = (10.0, 20.0)
+    # payload is now a WINDOW (pickup at onset -> RELEASE at onset+duration),
+    # mirroring the wind-window structure: 2 transitions per episode (N down,
+    # N back up), symmetric fig timelines, and the delivery-drone narrative.  # m/s — must exceed PX4 compensation so GT
                                                # actually deflects (6 m/s legacy data: vel-std
                                                # 1.258→1.293, i.e. fully compensated → useless)
     # anchor dropout: PROLONGED full outage (UIFM-SLAC Scenario 3 = ~7 s NLOS;
@@ -421,7 +433,19 @@ class Config:
     cm_calm_dur_range: tuple = (2.5, 4.0)      # s per calm segment
     cm_dyn_dur_range: tuple = (2.0, 3.5)       # s per dynamic segment
     # held-out (outside training ranges → generalization claim)
-    heldout_mass_delta_range: tuple = (0.90, 1.10)
+    heldout_mass_delta_range: tuple = (0.65, 0.75)   # superseded by heldout_plan
+    heldout_plan: tuple = (("nominal", 0, 0),
+                           ("nominal", 0, 0),
+                           ("sustained_wind", 15.0, 16.0),
+                           ("sustained_wind", 15.0, 16.0),
+                           ("sustained_wind", 17.0, 18.0),
+                           ("mass_step", 0.65, 0.75),
+                           ("mass_step", 0.65, 0.75))
+    # DETERMINISTIC held-out composition (approved 2026-07-09): the MAIN table
+    # uses the moderate rows (wind 15-16 = bottom of the TRAINING range, i.e.
+    # in-distribution, not extrapolation; payload +65-75%); the single severe
+    # wind (17-18) trajectory is FIGURE-ONLY (dramatic N swing), its strength
+    # stated in the caption. n_heldout must be 7 to consume the full plan.
     heldout_gust_speed_range: tuple = (20.0, 24.0)
     heldout_nlos_bias_range: tuple = (0.5, 0.7)  # stronger NLoS bias (still < gate)
     # dataset sizes

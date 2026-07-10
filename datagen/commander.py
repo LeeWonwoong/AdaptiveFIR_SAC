@@ -160,7 +160,10 @@ class Commander(Node):
     def _scenario_desc(sc):
         d = []
         if sc.get("mass"):
-            d.append(f"payload +{100 * sc['mass']['delta']:.0f}% @ t={sc['mass']['onset_s']:.1f}s")
+            _mm = sc["mass"]
+            _w = (f"+{_mm['duration_s']:.1f}s" if "duration_s" in _mm else " (to end)")
+            d.append(f"payload +{100 * _mm['delta']:.0f}% "
+                     f"@ t={_mm['onset_s']:.1f}s{_w}")
         if sc.get("sustained"):
             su = sc["sustained"]
             _w = (f" @ t={su['start_s']:.1f}s+{su['duration_s']:.1f}s"
@@ -177,7 +180,9 @@ class Commander(Node):
         sc = self.scenario or {}
         f = {}
         if sc.get("mass"):
-            f[f"PAYLOAD+{100 * sc['mass']['delta']:.0f}%"] = t >= sc["mass"]["onset_s"]
+            _mm = sc["mass"]
+            _me = _mm["onset_s"] + _mm.get("duration_s", 1e9)
+            f[f"PAYLOAD+{100 * _mm['delta']:.0f}%"] = _mm["onset_s"] <= t <= _me
         if sc.get("sustained"):
             su = sc["sustained"]
             _on = (su["start_s"] <= t <= su["start_s"] + su["duration_s"]) \
@@ -202,7 +207,10 @@ class Commander(Node):
                 rclpy.shutdown()
                 return
             traj_id, split, heldout = self.queue[self.q_idx]
-            self.scenario = sample_scenario(self.cfg, self.rng, heldout=heldout)
+            _ho_idx = sum(1 for q in self.queue[:self.q_idx] if q[2]) \
+                if heldout else None            # heldout 서수 → heldout_plan 소비
+            self.scenario = sample_scenario(self.cfg, self.rng, heldout=heldout,
+                                            heldout_idx=_ho_idx)
             payload = dict(self.scenario)
             payload.update({"traj_id": traj_id, "split": split})
             m = String()
