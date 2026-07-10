@@ -190,7 +190,16 @@ class Config:
     # Reward: r = -||p_gt - p_hat||  (pure localization error, L2 distance),
     # with a safety clip only (numerical guard, NOT reward engineering).
     reward_clip: float = 10.0           # clip per-step |cost| at 10 m (protects entropy auto-tuning)
-    reward_mode: str = "sq"             # "sq": r = -clip(||e||)^2  (DEFAULT)
+    reward_err_scale: float = 0.2       # e0 [m]: reward normalization scale
+                                        # (~nominal error level). r = -(min(e,2)/e0)^2
+                                        # -> nominal -0.36, unadapted window -4.0,
+                                        # adapted -1.6: the per-step adaptation gain
+                                        # becomes ~2.4 (was ~0.1 raw-squared, same
+                                        # order as alpha=0.08 + smooth penalty).
+                                        # Positive scaling => optimal policy UNCHANGED
+                                        # (reward scale is SAC's canonical knob).
+    reward_sq_clip: float = 100.0       # cap of the scaled squared cost (e=2 m sat.)
+    reward_mode: str = "sq"             # "sq": r = -(min(e,2)/e0)^2  (DEFAULT)
                                         #   quadratic cost == direct RMSE minimization
                                         #   (the reported metric IS the square metric),
                                         #   and it amplifies the disturbance-window signal
@@ -221,7 +230,8 @@ class Config:
                                         # eval table. NEVER enters the reward (user
                                         # decision: reward stays absolute-error-based).
                                         # 0 = off (saves ~2x env compute).
-    act_smooth_coef: float = 0.005      # small |dN| penalty (units of N-range) so the
+    act_smooth_coef: float = 0.02       # small |dN| penalty (units of N-range; scaled
+                                        # with the new reward units) so the
                                         # learned N(t) is regime-STEPS, not jitter — the
                                         # paper figure needs Shmaliy-style plateaus.
     train_scenario_types: tuple = ("nominal", "sustained_wind", "mass_step")

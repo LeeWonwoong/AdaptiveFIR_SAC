@@ -186,8 +186,15 @@ class VectorReplayEnv:
         # ── reward: ABSOLUTE error only (user decision — no baseline terms).
         ec = torch.clamp(err, max=cfg.reward_clip)
         if getattr(cfg, "reward_mode", "sq") == "sq":
-            reward = -ec * ec        # quadratic == direct (R)MSE objective; windows
-                                     # weigh ~9x vs nominal instead of ~3x (linear)
+            # normalized quadratic: (e/e0)^2 with e0 ~ nominal error level.
+            # For e<1 a RAW square SHRINKS the absolute signal (0.4^2-0.25^2
+            # = 0.10/step) to the same order as the entropy term (alpha=0.08);
+            # dividing by e0=0.2 restores it (~2.4/step) without changing the
+            # optimal policy (positive scaling).
+            e0 = getattr(cfg, "reward_err_scale", 0.2)
+            rn = torch.clamp(err, max=2.0) / e0
+            reward = -torch.clamp(rn * rn,
+                                  max=getattr(cfg, "reward_sq_clip", 100.0))
         else:
             reward = -ec             # legacy linear
         # DI-FME parallel filter = MONITOR ONLY (logging / eval table), not reward:
