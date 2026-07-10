@@ -71,7 +71,14 @@ class EKF:
         m = self.model
         A = m.jac_f(self.s, u_prev)
         s_pred = m.f(self.s, u_prev)
-        self.P = torch.bmm(torch.bmm(A, self.P), A.transpose(1, 2)) + self.Q
+        # fp64 covariance path + symmetrization (same hardening as wfme aux-EKF):
+        # fp32 (I-KC)P intermittently loses positive-definiteness on CUDA ->
+        # one-step NaN blowups observed in 7/50 eval rollouts while tracking at
+        # 0.02-0.4 m error. fp64 + P=(P+P^T)/2 removes the failure mode.
+        Ad = A.double()
+        Pd = torch.bmm(torch.bmm(Ad, self.P.double()), Ad.transpose(1, 2)) \
+            + self.Q.double()
+        self.P = (0.5 * (Pd + Pd.transpose(1, 2))).float()
         if z is None:                                   # prediction substep
             self.s = s_pred
             return self.s, None, s_pred
@@ -86,10 +93,12 @@ class EKF:
         valid = torch.isfinite(nu)                       # [M,4]
         nu = torch.nan_to_num(nu, nan=0.0)
         C = C * valid.float().unsqueeze(-1)              # drop missing rows
-        S = torch.bmm(torch.bmm(C, self.P), C.transpose(1, 2)) + self.R
-        K = torch.bmm(self.P, torch.linalg.solve(S, C).transpose(1, 2))
-        self.s = s_pred + torch.bmm(K, nu.unsqueeze(-1)).squeeze(-1)
-        self.P = torch.bmm(self.eye - torch.bmm(K, C), self.P)
+        Cd, Pd = C.double(), self.P.double()
+        S = torch.bmm(torch.bmm(Cd, Pd), Cd.transpose(1, 2)) + self.R.double()
+        K = torch.bmm(Pd, torch.linalg.solve(S, Cd).transpose(1, 2))
+        self.s = s_pred + torch.bmm(K, nu.double().unsqueeze(-1)).squeeze(-1).float()
+        Pu = torch.bmm(self.eye.double() - torch.bmm(K, Cd), Pd)
+        self.P = (0.5 * (Pu + Pu.transpose(1, 2))).float()
         return self.s, nu, s_pred
 
 

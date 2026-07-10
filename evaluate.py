@@ -4,7 +4,7 @@ evaluate.py — online-play validation for the paper
 Runs every method over FULL held-out trajectories with a FIXED measurement-
 noise seed (all methods see identical measurement sequences — fair comparison):
 
-  EKF | UKF | FME(N grid, lam=1) | DI-FME(N=14, gamma=0.3) | Rule-FME
+  EKF | UKF | FME(N grid, lam=1) | FIR(N=14, gamma=0.3) | Rule-FME
   | SAC-AFME (trained actor, deterministic — GT-free at deployment)
   | Greedy-GT (per-step argmin of GT error over a (N,lam) grid — a near-
     upper-bound reference when the closed-loop coupling is benign (fully
@@ -62,10 +62,14 @@ class Runner:
             M, cfg.state_dim, device=self.dev)
         flt.reset(torch.arange(M, device=self.dev), s0)
         errs = torch.zeros(M, T, device=self.dev)
+        evec = torch.zeros(M, T, 3, device=self.dev)   # per-axis error
         Ns = torch.zeros(M, T, device=self.dev)
         Ls = torch.zeros(M, T, device=self.dev)
-        feat = cfg.meas_dim + 2
+        feat = (cfg.n_obs_groups + 2) if cfg.obs_channel_norms \
+            else (cfg.meas_dim + 2)
         stack = torch.zeros(M, cfg.L_obs, feat, device=self.dev)   # [M,L,feat]
+        grp_scale = torch.tensor(cfg.obs_group_scale,
+                                 device=self.dev).view(1, -1)
         defN = torch.full((M,), float(cfg.N_default), device=self.dev)
         defL = torch.full((M,), float(cfg.lam_default), device=self.dev)
 
@@ -76,9 +80,19 @@ class Runner:
             return 2.0 * (lm - cfg.lam_min) / max(1.0 - cfg.lam_min, 1e-6) - 1.0
 
         def _push(nu, N, lm):
-            r = torch.nan_to_num((nu / self.meas_sig).clamp(
-                -cfg.resid_clip, cfg.resid_clip), nan=0.0)
-            return torch.cat([r, _nN(N).unsqueeze(1), _nL(lm).unsqueeze(1)], dim=1)
+            # MUST mirror rlenv.replay_env._push_feature EXACTLY — the policy
+            # was trained on channel-GROUP whitened norms / nominal scale.
+            r = torch.nan_to_num(nu / self.meas_sig, nan=0.0)
+            if cfg.obs_channel_norms:
+                nr = len(cfg.anchors)
+                g = torch.cat([r[:, 0:nr].norm(dim=1, keepdim=True) / nr ** 0.5,
+                               r[:, nr:nr+3].norm(dim=1, keepdim=True) / 3 ** 0.5,
+                               r[:, nr+3:nr+6].norm(dim=1, keepdim=True) / 3 ** 0.5],
+                              dim=1)
+                head = (g / grp_scale).clamp(max=cfg.resid_clip)
+            else:
+                head = r.clamp(-cfg.resid_clip, cfg.resid_clip)
+            return torch.cat([head, _nN(N).unsqueeze(1), _nL(lm).unsqueeze(1)], dim=1)
         combos = None
         if oracle:
             Ng = torch.tensor([8., 12., 16., 20.], device=self.dev)
@@ -128,15 +142,15 @@ class Runner:
             if nu is not None:                       # innovation exists on epochs only
                 stack = torch.roll(stack, 1, dims=1)
                 stack[:, 0] = _push(nu, N, lam)
-            errs[:, t] = torch.linalg.vector_norm(
-                ds.gt[:, t, 0:3] - s_hat[:, 0:3], dim=1)
+            evec[:, t] = ds.gt[:, t, 0:3] - s_hat[:, 0:3]
+            errs[:, t] = torch.linalg.vector_norm(evec[:, t], dim=1)
             Ns[:, t] = N
             Ls[:, t] = lam
-        return errs.cpu().numpy(), Ns.cpu().numpy(), Ls.cpu().numpy()
+        return errs.cpu().numpy(), Ns.cpu().numpy(), Ls.cpu().numpy(), evec.cpu().numpy()
 
 
 # ────────────────────────────────────────────── metrics
-def metrics(cfg, ds, errs, Ns):
+def metrics(cfg, ds, errs, Ns, evec=None):
     dt = cfg.dt
     # skip the growing-window ramp of ALL methods (handover starts at N_min,
     # but fixed-N baselines only reach their full window at N_max epochs)
@@ -144,6 +158,9 @@ def metrics(cfg, ds, errs, Ns):
     out = {"rmse": float(np.sqrt((errs[:, W:] ** 2).mean())),
            "max_err": float(errs[:, W:].max()),
            "mean_N": float(Ns[:, W:].mean())}
+    if evec is not None:            # per-axis (paper-table convention)
+        for j, axn in enumerate("xyz"):
+            out[f"rmse_{axn}"] = float(np.sqrt((evec[:, W:, j] ** 2).mean()))
     # disturbance-window rmse + recovery time
     d_err, rec = [], []
     for i, meta in enumerate(ds.metas):
@@ -184,15 +201,23 @@ def main():
     os.makedirs(ev_dir, exist_ok=True)
 
     methods = {}
+    # FIXED KF statistics (paper rule): R = datasheet sigmas, Q = physical
+    # process noise x kf_q_inflation (=10, unmodeled-dynamics heuristic),
+    # identical constants for every scenario — no per-scenario retuning.
+    _q_fix = list(getattr(cfg, "kf_Q_diag",
+                          (1e-6,) * 3 + (2e-3,) * 3 + (1e-5,) * 3 + (2e-4,) * 3))
+    _r_fix = list(cfg.meas_sigma)
     if "ekf" not in skip:
-        methods["EKF"] = dict(flt=EKF(cfg, dev, M))
+        methods["EKF"] = dict(flt=EKF(cfg, dev, M, q_diag=_q_fix, r_diag=_r_fix))
     if "ukf" not in skip:
-        methods["UKF"] = dict(flt=UKF(cfg, dev, M))
+        methods["UKF"] = dict(flt=UKF(cfg, dev, M, q_diag=_q_fix, r_diag=_r_fix))
     if "fme" not in skip:
-        for N in (8, 14, 20):
-            methods[f"FME-N{N}"] = dict(flt=FixedFME(cfg, dev, M, N=N, lam=1.0))
-    if "difme" not in skip:
-        methods["DI-FME"] = dict(flt=DIFME(cfg, dev, M))
+        # FIR = plain UFIR (fixed N=14, lam=1, batch-LS gain from the window,
+        # NO dynamic/adaptive gain — user decision 2026-07-09). Grid variants
+        # kept for the N-sensitivity column.
+        methods["FIR"] = dict(flt=FixedFME(cfg, dev, M, N=10, lam=1.0))
+        for N in (14, 20):
+            methods[f"FIR-N{N}"] = dict(flt=FixedFME(cfg, dev, M, N=N, lam=1.0))
     if "rule" not in skip:
         methods["Rule-FME"] = dict(flt=RuleFME(cfg, dev, M))
     ckpt = a.ckpt or os.path.join(cfg.outdir, "ckpt.pt")
@@ -206,20 +231,25 @@ def main():
 
     rows, curves = [], {}
     for name, kw in methods.items():
-        errs, Ns, Ls = run.run(kw["flt"], kw.get("policy"), kw.get("oracle", False))
-        mt = metrics(cfg, ds, errs, Ns)
+        errs, Ns, Ls, evec = run.run(kw["flt"], kw.get("policy"),
+                                     kw.get("oracle", False))
+        mt = metrics(cfg, ds, errs, Ns, evec)
         rows.append((name, mt))
         curves[name] = (errs, Ns, Ls)
-        print(f"{name:14s} rmse {mt['rmse']:.4f} | disturb {mt['rmse_disturb']:.4f} | "
+        print(f"{name:14s} rmse {mt['rmse']:.4f} "
+              f"(x {mt.get('rmse_x', 0):.3f} y {mt.get('rmse_y', 0):.3f} "
+              f"z {mt.get('rmse_z', 0):.3f}) | disturb {mt['rmse_disturb']:.4f} | "
               f"max {mt['max_err']:.3f} | rec {mt['recovery_s']:.2f}s | "
               f"N {mt['mean_N']:.1f}", flush=True)
         np.savez_compressed(os.path.join(ev_dir, f"curve_{name}.npz"),
-                            errs=errs, N=Ns, lam=Ls)
+                            errs=errs, N=Ns, lam=Ls, evec=evec)
 
     with open(os.path.join(ev_dir, "summary.csv"), "w") as f:
-        f.write("method,rmse,rmse_disturb,max_err,recovery_s,mean_N\n")
+        f.write("method,rmse,rmse_x,rmse_y,rmse_z,rmse_disturb,max_err,recovery_s,mean_N\n")
         for name, mt in rows:
-            f.write(f"{name},{mt['rmse']:.5f},{mt['rmse_disturb']:.5f},"
+            f.write(f"{name},{mt['rmse']:.5f},{mt.get('rmse_x', 0):.5f},"
+                    f"{mt.get('rmse_y', 0):.5f},{mt.get('rmse_z', 0):.5f},"
+                    f"{mt['rmse_disturb']:.5f},"
                     f"{mt['max_err']:.4f},{mt['recovery_s']:.3f},{mt['mean_N']:.2f}\n")
     print("wrote", os.path.join(ev_dir, "summary.csv"))
 
@@ -230,7 +260,7 @@ def main():
         import matplotlib.pyplot as plt
         pick = 0
         for i, m in enumerate(ds.metas):
-            if m.get("scenario", {}).get("type") in ("mass_step", "mixed", "gust"):
+            if m.get("scenario", {}).get("type") in ("sustained_wind", "mass_step", "mixed", "gust"):
                 pick = i
                 break
         t = np.arange(ds.T) * cfg.dt
@@ -240,7 +270,7 @@ def main():
         for (t0, t1, lab) in disturbance_intervals(sc):
             for A in ax:
                 A.axvspan(t0, min(t1, t[-1]), color="orange", alpha=0.15)
-        show = [k for k in ("DI-FME", "FME-N14", "EKF", "SAC-AFME", "Greedy-GT")
+        show = [k for k in ("FIR", "EKF", "SAC-AFME", "Greedy-GT")
                 if k in curves]
         for k in show:
             ax[0].plot(t, curves[k][0][pick], label=k, lw=1.1)

@@ -117,11 +117,19 @@ def main():
             nhi = nhi_acc / max(nhi_cnt, 1)
             nlo = nlo_acc / max(nlo_cnt, 1)
             rref = ref_acc / max(cnt, 1)
-            print(f"[{step:7d}] ret/ep {ret:9.1f} | rmse {rmse:.4f} (DI-FME {rref:.4f}, div {refbig}) | "
+            print(f"[{step:7d}] ret/ep {ret:9.1f} | rmse {rmse:.4f} (FIR {rref:.4f}, div {refbig}) | "
                   f"N {n_acc/max(cnt,1):5.1f}±{nsd_acc/max(cnt,1):3.1f} lam {l_acc/max(cnt,1):.3f} | "
                   f"N|dist {nhi:4.1f} vs N|calm {nlo:4.1f} (gap {nlo-nhi:+4.1f}) | "
                   f"q {losses['loss_q']:.3f} pi {losses['loss_pi']:.3f} "
                   f"a {losses['alpha']:.3f} | {sps:.1f} vsteps/s", flush=True)
+            # ── INTERVAL statistics: reset per print so every column is the
+            #    RECENT behavior (cumulative-vs-interval mixups previously
+            #    displayed sums-over-prints, e.g. "DI-FME 95" = 0.317 x 300
+            #    prints). refbig stays cumulative (= total divergence count).
+            err_acc = ref_acc = n_acc = l_acc = nsd_acc = 0.0
+            nhi_acc = nlo_acc = 0.0
+            nhi_cnt = nlo_cnt = 0
+            cnt = 0
             with open(log_path, "a") as f:
                 f.write(f"{step},{transitions},{ret:.2f},{rmse:.5f},"
                         f"{n_acc/max(cnt,1):.2f},{l_acc/max(cnt,1):.4f},"
