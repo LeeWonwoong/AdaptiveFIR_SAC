@@ -52,7 +52,14 @@ class Runner:
         rbias = ds.range_bias if hasattr(ds, "range_bias") else 0.0       # [M,T,4]
         z_rng = ds.range_clean + rbias + sig_u * nscale * torch.randn(
             self.M, ds.T, n_rng, generator=g, device=device)
-        self.z_noisy = z_rng
+        # IMU rows (attitude + gyro) — the 10-D FUSED measurement, identical
+        # synthesis to rlenv.replay_env._measure (was UWB-only legacy: the
+        # 4-D z crashed every 10-D filter with a dim-mismatch).
+        z_att = ds.gt[:, :, 6:9] + ms[n_rng] * torch.randn(
+            self.M, ds.T, 3, generator=g, device=device)
+        z_gyr = ds.gt[:, :, 9:12] + ms[n_rng + 3] * torch.randn(
+            self.M, ds.T, 3, generator=g, device=device)
+        self.z_noisy = torch.cat([z_rng, z_att, z_gyr], dim=2)     # [M,T,10]
         self.meas_sig = ms
 
     def run(self, flt, policy=None, oracle=False, agent_env_stats=None):
