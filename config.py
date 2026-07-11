@@ -338,8 +338,9 @@ class Config:
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
     sustained_speed_range: tuple = (15.0, 20.0)
     wind_vertical_ratio: tuple = (0.20, 0.30)
-    # vertical wind component = ratio x horizontal speed, sign random per
-    # episode (up/downdraft). Purpose (2026-07-09): inject MODEL ERROR into z
+    # vertical wind component = ratio x horizontal speed, UPDRAFT (+) only —
+    # empirical gate (2026-07-10): updraft shifts the window z-optimum to
+    # N~6 in 3/3 trajectories; downdraft produces no z-shift in 2/2. Purpose (2026-07-09): inject MODEL ERROR into z
     # inside the wind window so the short-horizon advantage covers all three
     # axes (previously z stayed noise-limited -> long N optimal -> AFIR lost
     # the z cell to FIR). 25% of 15 m/s = 3.8 m/s vertical, same order as the
