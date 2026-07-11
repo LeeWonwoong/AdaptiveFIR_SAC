@@ -165,10 +165,12 @@ class Commander(Node):
             d.append(f"payload +{100 * _mm['delta']:.0f}% "
                      f"@ t={_mm['onset_s']:.1f}s{_w}")
         if sc.get("sustained"):
-            su = sc["sustained"]
-            _w = (f" @ t={su['start_s']:.1f}s+{su['duration_s']:.1f}s"
-                  if "start_s" in su else " (full traj)")
-            d.append(f"sustained wind {su['speed']:.1f} m/s{_w}")
+            _su0 = sc["sustained"]
+            _sl = _su0 if isinstance(_su0, list) else [_su0]
+            _wtxt = ", ".join(f"{w['start_s']:.1f}+{w['duration_s']:.1f}s"
+                              if "start_s" in w else "full" for w in _sl)
+            d.append(f"sustained wind {_sl[0]['speed']:.1f} m/s "
+                     f"[{len(_sl)}win: {_wtxt}]")
         for g in sc.get("gusts", []):
             d.append(f"gust {g['speed']:.1f} m/s @ {g['start_s']:.1f}s+{g['duration_s']:.1f}s")
         for tb in sc.get("turbulence", []):
@@ -184,10 +186,11 @@ class Commander(Node):
             _me = _mm["onset_s"] + _mm.get("duration_s", 1e9)
             f[f"PAYLOAD+{100 * _mm['delta']:.0f}%"] = _mm["onset_s"] <= t <= _me
         if sc.get("sustained"):
-            su = sc["sustained"]
-            _on = (su["start_s"] <= t <= su["start_s"] + su["duration_s"]) \
-                if "start_s" in su else True
-            f[f"WIND {su['speed']:.0f}m/s"] = _on
+            _su0 = sc["sustained"]
+            _sl = _su0 if isinstance(_su0, list) else [_su0]
+            _on = any((w["start_s"] <= t <= w["start_s"] + w["duration_s"])
+                      if "start_s" in w else True for w in _sl)
+            f[f"WIND {_sl[0]['speed']:.0f}m/s"] = _on
         for i, g in enumerate(sc.get("gusts", [])):
             f[f"GUST{i} {g['speed']:.0f}m/s"] = \
                 g["start_s"] <= t <= g["start_s"] + g["duration_s"]

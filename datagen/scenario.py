@@ -146,10 +146,28 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
         # at N=10-14). Scenario is therefore defined as wind with an updraft
         # component (thermal / terrain-induced flow) — stated in the paper.
         _vert = float(rng.uniform(*_vr)) if _vr else 0.0
-        sc["sustained"] = {"speed": float(rng.uniform(*_sr)),
-                           "vert_ratio": _vert,
-                           "dir_rad": float(rng.uniform(0, 2 * np.pi)),
-                           "start_s": _s0, "duration_s": _sd}
+        _nw = int(getattr(cfg, "wind_n_windows", 1))
+        _spd = float(rng.uniform(*_sr)); _dir = float(rng.uniform(0, 2 * np.pi))
+        if _nw <= 1:
+            sc["sustained"] = {"speed": _spd, "vert_ratio": _vert,
+                               "dir_rad": _dir,
+                               "start_s": _s0, "duration_s": _sd}
+        else:
+            # N non-overlapping windows spread across the trajectory, each with
+            # the SAME wind vector, gap >= 6 s. Slots split [0.10, 0.92]*dur.
+            _wins = []
+            _lo, _hi = 0.10 * dur, 0.92 * dur
+            _slot = (_hi - _lo) / _nw
+            for _k in range(_nw):
+                _d = float(rng.uniform(*getattr(cfg, "sustained_duration_range",
+                                                (8.0, 15.0))))
+                _d = min(_d, _slot - 6.0)                 # leave >=6 s gap
+                _base = _lo + _k * _slot
+                _st = float(rng.uniform(_base, _base + _slot - _d))
+                _wins.append({"speed": _spd, "vert_ratio": _vert,
+                              "dir_rad": _dir,
+                              "start_s": _st, "duration_s": _d})
+            sc["sustained"] = _wins        # LIST of windows
     elif stype == "anchor_dropout":
         sc["dropouts"] = _dropouts()
     elif stype == "nlos_burst":
@@ -178,11 +196,13 @@ def disturbance_intervals(sc: dict):
         out.append((g["start_s"], g["start_s"] + g["duration_s"], "gust"))
     if sc.get("sustained"):
         su = sc["sustained"]
-        if "start_s" in su:      # windowed (2026-07-09+): anchor at the TRUE onset
-            out.append((su["start_s"], su["start_s"] + su["duration_s"],
-                        "sustained_wind"))
-        else:                    # legacy full-trajectory sustained
-            out.append((0.0, sc["duration_s"], "sustained_wind"))
+        _sl = su if isinstance(su, list) else [su]     # 1-or-N windows
+        for _w in _sl:
+            if "start_s" in _w:  # windowed (2026-07-09+): anchor at the TRUE onset
+                out.append((_w["start_s"], _w["start_s"] + _w["duration_s"],
+                            "sustained_wind"))
+            else:                # legacy full-trajectory sustained
+                out.append((0.0, sc["duration_s"], "sustained_wind"))
     for dp in sc.get("dropouts", []):
         out.append((dp["start_s"], dp["start_s"] + dp["duration_s"], "anchor_dropout"))
     for nb in sc.get("nlos_burst", []):

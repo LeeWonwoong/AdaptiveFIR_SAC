@@ -22,16 +22,18 @@ class WindModel:
         w = np.zeros(3)
         sus = self.sc.get("sustained")
         if sus:
-            _in = True
-            if "start_s" in sus:                 # windowed (default); missing
-                _in = sus["start_s"] <= t <= \
-                    sus["start_s"] + sus["duration_s"]   # keys = legacy full-traj
-            if _in:
-                d = np.array([np.cos(sus["dir_rad"]), np.sin(sus["dir_rad"]), 0.0])
-                w += sus["speed"] * d
-                # vertical component (up/downdraft): ratio x horizontal speed,
-                # sign fixed per episode (scenario['sustained']['vert_ratio']).
-                w[2] += sus["speed"] * float(sus.get("vert_ratio", 0.0))
+            _sl = sus if isinstance(sus, list) else [sus]   # 1-or-N windows
+            for _su in _sl:
+                _in = True
+                if "start_s" in _su:             # windowed (default); missing
+                    _in = _su["start_s"] <= t <= \
+                        _su["start_s"] + _su["duration_s"]  # keys = legacy full
+                if _in:
+                    d = np.array([np.cos(_su["dir_rad"]),
+                                  np.sin(_su["dir_rad"]), 0.0])
+                    w += _su["speed"] * d
+                    w[2] += _su["speed"] * float(_su.get("vert_ratio", 0.0))
+                    break        # windows are non-overlapping; one active max
         for g in self.sc.get("gusts", []):
             if g["start_s"] <= t <= g["start_s"] + g["duration_s"]:
                 d = np.array([np.cos(g["dir_rad"]), np.sin(g["dir_rad"]), 0.0])
