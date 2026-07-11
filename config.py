@@ -337,6 +337,13 @@ class Config:
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
     sustained_speed_range: tuple = (15.0, 20.0)
+    wind_n_windows: int = 2
+    # sustained_wind: number of NON-overlapping wind windows per trajectory
+    # (2026-07-10). 2 -> the estimator sees enter/recover TWICE, which makes the
+    # AFIR horizon adaptation far more legible in the time-series figures. Gap
+    # between windows >= 6 s. Backward compatible: 1 reproduces the old single
+    # window. Applies to BOTH train and held-out; retraining optional (a policy
+    # trained on 1 window still reacts to each window independently).
     wind_vertical_ratio: tuple = (0.20, 0.30)
     # vertical wind component = ratio x horizontal speed, UPDRAFT (+) only —
     # empirical gate (2026-07-10): updraft shifts the window z-optimum to
