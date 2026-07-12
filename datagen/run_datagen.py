@@ -63,7 +63,6 @@ from pegasus.simulator.logic.interface.pegasus_interface import (
     PegasusInterface)                                                 # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import Config                                             # noqa: E402
 from datagen.wind import WindModel                                    # noqa: E402
 from datagen.traj_logger import TrajLogger                            # noqa: E402
 
@@ -113,7 +112,15 @@ class DatagenApp:
         self.stop_sim = False
 
         self.logger = TrajLogger(args.out)
-        _c = Config()
+        # Load the PROJECT config by absolute path. A bare `import config`
+        # inside Isaac's python.sh resolves to the bundled cv2/config.py
+        # (pip_prebundle shadows the project root) and crashes the loader.
+        import importlib.util as _ilu
+        _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "config.py")
+        _spec = _ilu.spec_from_file_location("afir_project_config", _cfg_path)
+        _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
+        _c = _mod.Config()
         self.amb_turb = float(getattr(_c, "ambient_turb_std", 0.0))
         self.amb_bw = float(getattr(_c, "ambient_turb_bw", 2.0))
         self.wind = WindModel({}, turb_intensity=self.amb_turb,
