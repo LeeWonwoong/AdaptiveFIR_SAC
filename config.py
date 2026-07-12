@@ -337,6 +337,16 @@ class Config:
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
     sustained_speed_range: tuple = (15.0, 20.0)
+    ambient_turb_std: float = 1.5
+    # ALWAYS-ON light turbulence [m/s], applied to EVERY trajectory including
+    # nominal (2026-07-10). Rationale: a perfectly clean nominal makes the FIR
+    # indistinguishable from the KF (both sit at the measurement-noise floor),
+    # which is an artifact of the simulator, not physics — real flight always
+    # has ambient air motion. A 1.5 m/s OU gust field injects a small but
+    # PERSISTENT model error (~0.2-0.4 m/s^2), which is exactly the regime the
+    # finite-memory structure is designed for. Expected: nominal chain
+    # EKF > UKF > FIR > AFIR emerges naturally.
+    ambient_turb_bw: float = 2.0        # OU bandwidth [Hz]
     wind_n_windows: int = 2
     # sustained_wind: number of NON-overlapping wind windows per trajectory
     # (2026-07-10). 2 -> the estimator sees enter/recover TWICE, which makes the
