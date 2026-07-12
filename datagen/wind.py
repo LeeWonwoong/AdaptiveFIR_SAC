@@ -68,8 +68,15 @@ class WindModel:
             if np.linalg.norm(self._tw) > 0.1:
                 w += self._tw
         if self.ti > 0:
+            # VARIANCE-PRESERVING OU (fixed 2026-07-10): the old update used
+            # (1 - a2) as the noise gain, which gives a steady-state std of
+            # ti * (1-a2)/sqrt(1-a2^2) ~ 0.14 * ti — i.e. the requested
+            # intensity was silently attenuated ~7x. sqrt(1 - a2^2) is the
+            # correct gain, so ti now IS the per-axis wind std [m/s].
             a2 = np.exp(-self.tb * dt)
-            self._ts = a2 * self._ts + (1 - a2) * self.ti * self.rng.standard_normal(3)
+            self._ts = (a2 * self._ts
+                        + np.sqrt(max(1.0 - a2 ** 2, 0.0)) * self.ti
+                        * self.rng.standard_normal(3))
             w += self._ts
         return w
 

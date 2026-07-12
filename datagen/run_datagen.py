@@ -63,6 +63,7 @@ from pegasus.simulator.logic.interface.pegasus_interface import (
     PegasusInterface)                                                 # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import Config                                             # noqa: E402
 from datagen.wind import WindModel                                    # noqa: E402
 from datagen.traj_logger import TrajLogger                            # noqa: E402
 
@@ -112,7 +113,11 @@ class DatagenApp:
         self.stop_sim = False
 
         self.logger = TrajLogger(args.out)
-        self.wind = WindModel({})
+        _c = Config()
+        self.amb_turb = float(getattr(_c, "ambient_turb_std", 0.0))
+        self.amb_bw = float(getattr(_c, "ambient_turb_bw", 2.0))
+        self.wind = WindModel({}, turb_intensity=self.amb_turb,
+                              turb_bw=self.amb_bw)
 
         # ── ROS ──
         rclpy.init()
@@ -163,7 +168,9 @@ class DatagenApp:
             self.scenario = d
             self.split = d.get("split", "train")
             self.traj_id = int(d.get("traj_id", self.traj_id))
-            self.wind = WindModel(d, seed=int(d.get("seed", 0)))
+            self.wind = WindModel(d, seed=int(d.get("seed", 0)),
+                                  turb_intensity=self.amb_turb,
+                                  turb_bw=self.amb_bw)
             self.mass_applied = False
             self._set_mass(self.mass_nominal)
             carb.log_warn(f"[datagen] scenario #{self.traj_id} "
