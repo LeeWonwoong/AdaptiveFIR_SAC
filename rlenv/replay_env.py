@@ -140,9 +140,21 @@ class VectorReplayEnv:
             g_att = r[:, nr:nr + 3].norm(dim=1, keepdim=True) / (3.0 ** 0.5)
             g_gyr = r[:, nr + 3:nr + 6].norm(dim=1, keepdim=True) / (3.0 ** 0.5)
             head = torch.cat([g_uwb, g_att, g_gyr], dim=1)            # [M,3]
-            # normalize by Isaac-measured NOMINAL levels, then clip per GROUP:
-            # obs unit = "x nominal" (1 = calm, 2-3.5 = disturbance, cap 4).
-            head = (head / self.grp_scale).clamp(max=c)
+            # normalize by the Isaac-measured CALM-FLIGHT innovation level, so
+            # mu reads as a multiple of nominal (1 = calm, 2-4 = disturbance).
+            head = head / self.grp_scale
+            if getattr(self.cfg, "obs_log_compress", False):
+                # LOG COMPRESSION (2026-07-13), replaces the hard clip:
+                #   mu~ = log(1+mu) / (denom + log(1+mu))  in [0,1)
+                # bounded (no clip needed), MONOTONE (a mu=22 outlier stays
+                # distinguishable from mu=4, which the old clip destroyed), and
+                # tail-compressing (a single agile-flight transient -- attitude
+                # p99 ~ 17 -- cannot dominate the input). mu is ratio-scale, so
+                # the log is the natural transform.
+                lg = torch.log1p(head.clamp(min=0.0))
+                head = lg / (float(self.cfg.obs_log_denom) + lg)
+            else:
+                head = head.clamp(max=c)                  # legacy hard clip
         else:
             head = r.clamp(-c, c)                                     # legacy
         feat = torch.cat([head, self._norm_N(N).unsqueeze(1),
