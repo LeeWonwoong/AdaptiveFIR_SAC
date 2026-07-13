@@ -176,14 +176,19 @@ class DatagenApp:
             self.scenario = d
             self.split = d.get("split", "train")
             self.traj_id = int(d.get("traj_id", self.traj_id))
-            # light ambient wind, drawn PER TRAJECTORY (see config)
-            _tr = getattr(self._cfg, "ambient_turb_std_range", None)
-            if _tr:
-                _rng = np.random.default_rng(int(d.get("seed", 0)) + 9973)
-                _ti = float(_rng.uniform(*_tr))
+            # Light ambient wind. Held-out rows carry an EXPLICIT value from
+            # heldout_plan (so the paper trajectories are deterministic);
+            # training rows draw one per trajectory from the configured range.
+            if "ambient_turb_std" in d:
+                _ti = float(d["ambient_turb_std"])           # planned
             else:
-                _ti = self.amb_turb
-            d["ambient_turb_std"] = _ti          # log it into the scenario meta
+                _tr = getattr(self._cfg, "ambient_turb_std_range", None)
+                if _tr:
+                    _rng = np.random.default_rng(int(d.get("seed", 0)) + 9973)
+                    _ti = float(_rng.uniform(*_tr))
+                else:
+                    _ti = self.amb_turb
+                d["ambient_turb_std"] = _ti                  # log into the meta
             self.wind = WindModel(d, seed=int(d.get("seed", 0)),
                                   turb_intensity=_ti, turb_bw=self.amb_bw)
             self.mass_applied = False

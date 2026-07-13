@@ -39,7 +39,7 @@ from rclpy.qos import (QoSProfile, ReliabilityPolicy, DurabilityPolicy,
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry
 from px4_msgs.msg import (OffboardControlMode, TrajectorySetpoint,
-                          VehicleCommand)
+                          VehicleCommand, VehicleStatus)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config                                # noqa: E402
@@ -76,6 +76,22 @@ class Commander(Node):
         self.pub_scenario = self.create_publisher(String, "/datagen/scenario", 10)
         self.pub_control = self.create_publisher(String, "/datagen/control", 10)
         self.create_subscription(Odometry, "/gt/odometry", self._cb_gt, qos_be)
+
+        # PX4 feedback. Without this the commander armed BLINDLY and re-sent the
+        # command every 2 s: right after an Isaac world reset PX4's EKF2 has to
+        # re-converge, arming is REJECTED until the pre-flight checks pass, and
+        # the old code simply spammed until it happened to succeed (the "Arm
+        # 재시도" loop). We now wait for the checks, then verify the result.
+        qos_px4 = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST, depth=1)
+        self.create_subscription(VehicleStatus, f"{ns}/fmu/out/vehicle_status",
+                                 self._cb_status, qos_px4)
+        self.px4_armed = False
+        self.px4_ready = False          # pre-flight checks pass
+        self.px4_offboard = False
+        self._arm_tries = 0
 
         # trajectory queue: (traj_id, split, heldout)
         self.queue = [(i, "train", False) for i in
@@ -139,6 +155,13 @@ class Commander(Node):
         m.from_external = True
         m.timestamp = 0
         self.pub_cmd.publish(m)
+
+    def _cb_status(self, msg):
+        self.px4_armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
+        self.px4_offboard = (msg.nav_state ==
+                             VehicleStatus.NAVIGATION_STATE_OFFBOARD)
+        # newer px4_msgs expose the pre-flight result; fall back gracefully
+        self.px4_ready = bool(getattr(msg, "pre_flight_checks_pass", True))
 
     def _arm_offboard(self):
         self._vehicle_cmd(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
@@ -230,25 +253,46 @@ class Commander(Node):
                 f"┗━ 외란: {self._scenario_desc(self.scenario)}")
             self._goto("STREAM")
 
-        elif self.state == "STREAM":                 # offboard heartbeat >= 1.5 s
+        elif self.state == "STREAM":
+            # Stream the offboard heartbeat + setpoint, and WAIT for PX4 to be
+            # ready before arming. PX4 requires (i) setpoints already flowing
+            # (>=2 Hz) BEFORE the OFFBOARD switch and (ii) the EKF2 estimate to
+            # have converged after the Isaac reset. Arming earlier is simply
+            # rejected. 3 s of heartbeat + the pre-flight flag removes the
+            # retry loop entirely; the 8 s cap keeps a stuck run from hanging.
             self._send_offboard()
             p0, _, yaw0 = self._pattern_ref(0.0)
             self._send_setpoint_enu(p0, None, yaw0)
-            if self.state_t > 1.5:
+            _ready = self.px4_ready and self.state_t > 3.0
+            if _ready or self.state_t > 8.0:
+                if not _ready:
+                    self.get_logger().warn(
+                        "  [TAKEOFF] pre-flight 미확인 — 8s 경과, 강행")
                 self._arm_offboard()
                 self.arm_resend_t = self.state_t
-                self.get_logger().info("  [TAKEOFF] Arm + OFFBOARD 전환 시도")
+                self._arm_tries = 1
+                self.get_logger().info(
+                    f"  [TAKEOFF] Arm + OFFBOARD 전환 (heartbeat {self.state_t:.1f}s, "
+                    f"pre-flight {'OK' if self.px4_ready else 'unknown'})")
                 self._goto("ASCEND")
 
         elif self.state == "ASCEND":                 # climb & settle at start point
             self._send_offboard()
             p0, _, yaw0 = self._pattern_ref(0.0)
             self._send_setpoint_enu(p0, None, yaw0)
-            if self.state_t - self.arm_resend_t > 2.0:      # re-send arm (repo habit)
+            # Re-send ONLY if PX4 actually reports it is not armed/offboard.
+            # (The old code re-sent unconditionally every 2 s, which is what
+            # produced the "Arm 재시도" spam even on runs that were fine.)
+            if (not (self.px4_armed and self.px4_offboard)
+                    and self.state_t - self.arm_resend_t > 2.0):
                 self._arm_offboard()
                 self.arm_resend_t = self.state_t
+                self._arm_tries += 1
                 if not self._airborne:
-                    self.get_logger().info("  [TAKEOFF] Arm 재시도")
+                    self.get_logger().warn(
+                        f"  [TAKEOFF] Arm 재시도 #{self._arm_tries} "
+                        f"(armed={self.px4_armed}, offboard={self.px4_offboard}, "
+                        f"pre-flight={self.px4_ready})")
             # 이륙 감지 (online_rl_main 계승: 감지 순간 1회 로그)
             if not self._airborne and self.gt_seen and self.gt_pos[2] > 0.5:
                 self._airborne = True

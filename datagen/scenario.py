@@ -17,9 +17,15 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
                     heldout_idx=None) -> dict:
     plan = getattr(cfg, "heldout_plan", None)
     _plan_row = None
+    _plan_win = ()          # explicit (start_s, duration_s) windows, if planned
+    _plan_extra = {}        # {"turb": ambient wind, "com": payload CoM offset}
     if heldout and plan and heldout_idx is not None:
         _plan_row = plan[heldout_idx % len(plan)]
         stype = _plan_row[0]
+        if len(_plan_row) > 3 and _plan_row[3]:
+            _plan_win = tuple(_plan_row[3])
+        if len(_plan_row) > 4 and _plan_row[4]:
+            _plan_extra = dict(_plan_row[4])
     else:
         stype = rng.choice(cfg.scenario_types, p=np.array(cfg.scenario_probs))
     pattern = rng.choice(cfg.flight_patterns)
@@ -29,6 +35,8 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
           "mass": None, "gusts": [], "sustained": None, "dropouts": [],
           "nlos_burst": [], "turbulence": [], "cm_regime": [],
           "heldout": bool(heldout)}
+    if "turb" in _plan_extra:
+        sc["ambient_turb_std"] = float(_plan_extra["turb"])
 
     mass_rng = cfg.heldout_mass_delta_range if heldout else cfg.mass_delta_range
     gust_rng = cfg.heldout_gust_speed_range if heldout else cfg.gust_speed_range
@@ -37,12 +45,18 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
     def _mass():
         _mr = (_plan_row[1], _plan_row[2]) if (_plan_row and
                                                _plan_row[0] == "mass_step") else mass_rng
-        _on = float(rng.uniform(*cfg.mass_onset_frac) * dur)
-        _dr = getattr(cfg, "mass_window_duration_range", None)
-        _du = float(rng.uniform(*_dr)) if _dr else float(dur - _on)
+        if _plan_win:                            # explicit paper window
+            _on, _du = float(_plan_win[0][0]), float(_plan_win[0][1])
+        else:
+            _on = float(rng.uniform(*cfg.mass_onset_frac) * dur)
+            _dr = getattr(cfg, "mass_window_duration_range", None)
+            _du = float(rng.uniform(*_dr)) if _dr else float(dur - _on)
         _du = min(_du, dur - _on - 2.0)          # release inside the traj
-        _co = getattr(cfg, "mass_com_offset_range", None)
-        _cm = float(rng.uniform(*_co)) if _co else 0.0
+        if "com" in _plan_extra:
+            _cm = float(_plan_extra["com"])
+        else:
+            _co = getattr(cfg, "mass_com_offset_range", None)
+            _cm = float(rng.uniform(*_co)) if _co else 0.0
         _cdir = float(rng.uniform(0, 2 * np.pi))
         return {"delta": float(rng.uniform(*_mr)),
                 "duration_s": _du,
@@ -155,7 +169,12 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
         _vert = float(rng.uniform(*_vr)) if _vr else 0.0
         _nw = int(getattr(cfg, "wind_n_windows", 1))
         _spd = float(rng.uniform(*_sr)); _dir = float(rng.uniform(0, 2 * np.pi))
-        if _nw <= 1:
+        if _plan_win:                              # explicit paper windows
+            sc["sustained"] = [
+                {"speed": _spd, "vert_ratio": _vert, "dir_rad": _dir,
+                 "start_s": float(_w[0]), "duration_s": float(_w[1])}
+                for _w in _plan_win]
+        elif _nw <= 1:
             sc["sustained"] = {"speed": _spd, "vert_ratio": _vert,
                                "dir_rad": _dir,
                                "start_s": _s0, "duration_s": _sd}
