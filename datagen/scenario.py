@@ -14,7 +14,7 @@ import numpy as np
 
 
 def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
-                    heldout_idx=None) -> dict:
+                    heldout_idx=None, train_idx=None) -> dict:
     plan = getattr(cfg, "heldout_plan", None)
     _plan_row = None
     _plan_win = ()          # explicit (start_s, duration_s) windows, if planned
@@ -28,8 +28,19 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
             _plan_extra = dict(_plan_row[4])
     else:
         stype = rng.choice(cfg.scenario_types, p=np.array(cfg.scenario_probs))
-    pattern = (_plan_extra["pattern"] if "pattern" in _plan_extra
-               else rng.choice(cfg.flight_patterns))
+    if "pattern" in _plan_extra:
+        pattern = _plan_extra["pattern"]
+    elif not heldout and train_idx is not None:
+        # TRAIN pattern quota (2026-07-13): patterns are assigned round-robin
+        # by trajectory index, so every pattern receives the same number of
+        # training trajectories regardless of the rng. The SCENARIO type and
+        # its intensity (gust speed, payload delta/CoM, window placement) stay
+        # randomly drawn as before -- the quota only removes the pattern
+        # imbalance (the previous run drew 17 helical / 7 figure8 / 0 waypoint
+        # because the pattern, too, was left to chance).
+        pattern = cfg.flight_patterns[int(train_idx) % len(cfg.flight_patterns)]
+    else:
+        pattern = rng.choice(cfg.flight_patterns)
     if "pattern" in _plan_extra:                 # held-out rows pin the pattern
         pattern = str(_plan_extra["pattern"])
     dur = float(cfg.traj_duration_s)

@@ -323,7 +323,7 @@ class Config:
     scenario_probs: tuple = (0.15, 0.40, 0.25, 0.20)
     # flight patterns (NO 'aggressive': high-G maneuvers break the 1st-order
     # Taylor linearization the FIR relies on — out of scope by design).
-    flight_patterns: tuple = ("figure8", "helical")
+    flight_patterns: tuple = ("helical", "figure8", "waypoint")
     # WAYPOINT DROPPED (2026-07-13). Measured reference profiles:
     #   figure8 : 2.0 m/s, mean bank 11.6 deg (max 16.5), z-range 0.57 m
     #   helical : 2.0 m/s, mean bank  7.9 deg,             z-range 0.72 m

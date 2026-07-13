@@ -253,6 +253,7 @@ class Commander(Node):
             _ho_idx = sum(1 for q in self.queue[:self.q_idx] if q[2]) \
                 if heldout else None            # heldout 서수 → heldout_plan 소비
             self.scenario = sample_scenario(self.cfg, self.rng, heldout=heldout,
+                                            train_idx=(None if heldout else traj_id),
                                             heldout_idx=_ho_idx)
             payload = dict(self.scenario)
             payload.update({"traj_id": traj_id, "split": split})

@@ -262,7 +262,7 @@ def generate_dataset(cfg: Config, out_root=None, n_train=None, n_heldout=None,
         d = os.path.join(out_root, split)
         os.makedirs(d, exist_ok=True)
         for i in range(n):
-            sc = sample_scenario(cfg, rng, heldout=ho)
+            sc = sample_scenario(cfg, rng, heldout=ho, train_idx=(None if ho else i))
             arrs = generate_traj(cfg, sc, np.random.default_rng(sc["seed"]))
             np.savez_compressed(os.path.join(d, f"traj_{i:04d}.npz"),
                                 **{k: v.astype(np.float32) for k, v in arrs.items()})
