@@ -324,7 +324,10 @@ class Config:
     # flight patterns (NO 'aggressive': high-G maneuvers break the 1st-order
     # Taylor linearization the FIR relies on — out of scope by design).
     flight_patterns: tuple = ("helical", "figure8", "waypoint")
-    traj_duration_s: float = 40.0
+    traj_duration_s: float = 50.0
+    # 50 s (2026-07-13). The figures are cropped at ~45 s anyway (the tail is
+    # a repeat of calm behaviour), so a longer trajectory only cost datagen
+    # time. All disturbance windows below are placed inside [4, 42] s.
     # ── DISTURBANCE SCENARIOS (paper-motivated: sharp events + recovery,
     #    NOT high-G maneuvers — 1st-order Taylor linearization stays valid).
     #    The (N,lambda) benefit is the UFIR transient/noise tradeoff
@@ -361,8 +364,8 @@ class Config:
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
     sustained_speed_range: tuple = (15.0, 20.0)
-    ambient_turb_std: float = 4.0
-    ambient_turb_std_range: tuple = (1.0, 5.0)
+    ambient_turb_std: float = 3.0
+    ambient_turb_std_range: tuple = (0.0, 4.0)
     # LIGHT AMBIENT WIND, drawn per trajectory (2026-07-13). Measured effect:
     #   1.4-2.0 m/s -> NO effect (drag ~ v^2 puts the model error BELOW the
     #                  existing nominal residual of 0.2-0.6 m/s^2; verified on
@@ -498,18 +501,31 @@ class Config:
     cm_dyn_dur_range: tuple = (2.0, 3.5)       # s per dynamic segment
     # held-out (outside training ranges → generalization claim)
     heldout_mass_delta_range: tuple = (0.65, 0.75)   # superseded by heldout_plan
-    heldout_plan: tuple = (("nominal", 0, 0),
-                           ("nominal", 0, 0),
-                           ("sustained_wind", 15.0, 16.0),
-                           ("sustained_wind", 15.0, 16.0),
-                           ("sustained_wind", 17.0, 18.0),
-                           ("mass_step", 0.65, 0.75),
-                           ("mass_step", 0.65, 0.75))
-    # DETERMINISTIC held-out composition (approved 2026-07-09): the MAIN table
-    # uses the moderate rows (wind 15-16 = bottom of the TRAINING range, i.e.
-    # in-distribution, not extrapolation; payload +65-75%); the single severe
-    # wind (17-18) trajectory is FIGURE-ONLY (dramatic N swing), its strength
-    # stated in the caption. n_heldout must be 7 to consume the full plan.
+    heldout_plan: tuple = (
+        # PAPER TRAJECTORIES (deterministic; approved 2026-07-13).
+        # Rows 0/2/5 are the ones reported in the table AND drawn in the
+        # figures, so the reader can match a curve to a number. Rows 1/3/4/6
+        # are held in reserve for a rebuttal ("does it hold on other
+        # trajectories?"). The disturbance windows are placed explicitly, not
+        # drawn at random: this is experiment DESIGN (the phenomenon must be
+        # legible in a 45-s plot), not selection on the result.
+        #
+        # (type, p_lo, p_hi, windows, extra)
+        #   windows : ((start_s, duration_s), ...)   [] = use the sampler
+        #   extra   : {"turb": ambient wind [m/s], "com": payload CoM offset [m]}
+        ("nominal", 0, 0, (), {"turb": 3.5}),               # 0  MAIN nominal
+        ("nominal", 0, 0, (), {"turb": 3.0}),               # 1  reserve
+        ("sustained_wind", 16.0, 16.0,                      # 2  MAIN gust (FIG)
+         ((6.0, 10.0), (26.0, 10.0)), {"turb": 3.5}),
+        ("sustained_wind", 16.0, 16.0,                      # 3  reserve
+         ((8.0, 10.0), (28.0, 10.0)), {"turb": 3.0}),
+        ("sustained_wind", 19.0, 19.0,                      # 4  severe (reserve)
+         ((7.0, 11.0), (27.0, 11.0)), {"turb": 3.5}),
+        ("mass_step", 0.70, 0.70, ((15.0, 18.0),),          # 5  MAIN payload (FIG)
+         {"turb": 3.5, "com": 0.04}),
+        ("mass_step", 0.70, 0.70, ((15.0, 18.0),),          # 6  reserve
+         {"turb": 3.0, "com": 0.03}),
+    )
     heldout_gust_speed_range: tuple = (20.0, 24.0)
     heldout_nlos_bias_range: tuple = (0.5, 0.7)  # stronger NLoS bias (still < gate)
     # dataset sizes
