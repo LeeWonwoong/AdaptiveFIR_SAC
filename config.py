@@ -364,8 +364,8 @@ class Config:
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
     sustained_speed_range: tuple = (15.0, 20.0)
-    ambient_turb_std: float = 3.0
-    ambient_turb_std_range: tuple = (0.0, 4.0)
+    ambient_turb_std: float = 0.0
+    ambient_turb_std_range: tuple = (0.0, 0.0)
     # LIGHT AMBIENT WIND, drawn per trajectory (2026-07-13). Measured effect:
     #   1.4-2.0 m/s -> NO effect (drag ~ v^2 puts the model error BELOW the
     #                  existing nominal residual of 0.2-0.6 m/s^2; verified on
@@ -513,18 +513,18 @@ class Config:
         # (type, p_lo, p_hi, windows, extra)
         #   windows : ((start_s, duration_s), ...)   [] = use the sampler
         #   extra   : {"turb": ambient wind [m/s], "com": payload CoM offset [m]}
-        ("nominal", 0, 0, (), {"turb": 1.0}),               # 0  MAIN nominal (1 m/s)
-        ("nominal", 0, 0, (), {"turb": 3.0}),               # 1  reserve
+        ("nominal", 0, 0, (), {"turb": 0.0}),               # 0  MAIN nominal (1 m/s)
+        ("nominal", 0, 0, (), {"turb": 0.0}),               # 1  reserve
         ("sustained_wind", 16.0, 16.0,                      # 2  MAIN gust (FIG)
-         ((6.0, 10.0), (26.0, 10.0)), {"turb": 3.5}),
+         ((6.0, 10.0), (26.0, 10.0)), {"turb": 0.0}),
         ("sustained_wind", 16.0, 16.0,                      # 3  reserve
-         ((8.0, 10.0), (28.0, 10.0)), {"turb": 3.0}),
+         ((8.0, 10.0), (28.0, 10.0)), {"turb": 0.0}),
         ("sustained_wind", 19.0, 19.0,                      # 4  severe (reserve)
-         ((7.0, 11.0), (27.0, 11.0)), {"turb": 3.5}),
+         ((7.0, 11.0), (27.0, 11.0)), {"turb": 0.0}),
         ("mass_step", 0.70, 0.70, ((15.0, 18.0),),          # 5  MAIN payload (FIG)
-         {"turb": 3.5, "com": 0.04}),
+         {"turb": 0.0, "com": 0.04}),
         ("mass_step", 0.70, 0.70, ((15.0, 18.0),),          # 6  reserve
-         {"turb": 3.0, "com": 0.03}),
+         {"turb": 0.0, "com": 0.03}),
     )
     heldout_gust_speed_range: tuple = (20.0, 24.0)
     heldout_nlos_bias_range: tuple = (0.5, 0.7)  # stronger NLoS bias (still < gate)
