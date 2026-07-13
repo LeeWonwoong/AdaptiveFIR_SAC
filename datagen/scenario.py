@@ -28,7 +28,10 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
             _plan_extra = dict(_plan_row[4])
     else:
         stype = rng.choice(cfg.scenario_types, p=np.array(cfg.scenario_probs))
-    pattern = rng.choice(cfg.flight_patterns)
+    pattern = (_plan_extra["pattern"] if "pattern" in _plan_extra
+               else rng.choice(cfg.flight_patterns))
+    if "pattern" in _plan_extra:                 # held-out rows pin the pattern
+        pattern = str(_plan_extra["pattern"])
     dur = float(cfg.traj_duration_s)
     sc = {"type": str(stype), "pattern": str(pattern), "duration_s": dur,
           "seed": int(rng.integers(0, 2 ** 31 - 1)),

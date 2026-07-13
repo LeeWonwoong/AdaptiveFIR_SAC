@@ -323,7 +323,19 @@ class Config:
     scenario_probs: tuple = (0.15, 0.40, 0.25, 0.20)
     # flight patterns (NO 'aggressive': high-G maneuvers break the 1st-order
     # Taylor linearization the FIR relies on — out of scope by design).
-    flight_patterns: tuple = ("helical", "figure8", "waypoint")
+    flight_patterns: tuple = ("figure8", "helical")
+    # WAYPOINT DROPPED (2026-07-13). Measured reference profiles:
+    #   figure8 : 2.0 m/s, mean bank 11.6 deg (max 16.5), z-range 0.57 m
+    #   helical : 2.0 m/s, mean bank  7.9 deg,             z-range 0.72 m
+    #   waypoint: 1.0 m/s, mean bank  0.5 deg,             z-range 0.00 m  <-- flat
+    # A payload mass error acts along the THRUST AXIS, so it only reaches x,y
+    # through the bank: a_xy = 5.18 * sin(theta). On waypoint that is 0.05
+    # m/s^2 -- an order of magnitude BELOW the 0.18 m/s^2 nominal residual, so
+    # the payload looks like a pure z-axis disturbance. Both payload rows of
+    # the last gate happened to DRAW waypoint, which is the whole reason the
+    # x,y signature was missing. On figure8 the same payload gives 1.04 m/s^2,
+    # ~6x the residual. waypoint also has zero z-excursion (no vertical
+    # observability) and 74-deg bank spikes at its velocity discontinuities.
     traj_duration_s: float = 50.0
     # 50 s (2026-07-13). The figures are cropped at ~45 s anyway (the tail is
     # a repeat of calm behaviour), so a longer trajectory only cost datagen
@@ -350,7 +362,7 @@ class Config:
     mass_impulse_z: tuple = (0.6, 1.2)         # downward velocity impulse [m/s] at coupling
     mass_impulse_xy: tuple = (0.3, 0.7)        # lateral velocity impulse [m/s]
     # gust: SHARP impulsive gusts (FM-SMC abrupt disturbance), not slow ramps
-    gust_speed_range: tuple = (15.0, 20.0)     # m/s — <15 m/s shifts N* the WRONG way
+    gust_speed_range: tuple = (12.0, 16.0)           # same tilt-clamp ceiling     # m/s — <15 m/s shifts N* the WRONG way
                                                # (measured: 10 m/s → N*=20, 12 m/s → ±2 ambiguous;
                                                #  ≥15 m/s → N* 14→4). PX4-compensation-exceeding only.
     gust_duration_range: tuple = (4.0, 8.0)    # s (sustained-style; the validated WIN was ~7 s)
@@ -363,9 +375,18 @@ class Config:
     # N shrink -> offset -> N recover, twice per trajectory.
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
-    sustained_speed_range: tuple = (15.0, 20.0)
-    ambient_turb_std: float = 0.0
-    ambient_turb_std_range: tuple = (0.0, 0.0)
+    sustained_speed_range: tuple = (12.0, 16.0)
+    # CAP AT 16 m/s (2026-07-13). Holding station against a headwind requires a
+    # bank of atan(0.023*v^2 / g): 28 deg at 15 m/s, 31 at 16, 40 at 19, 43 at
+    # 20 -- and the trajectory itself now demands another ~8 deg. PX4 clamps the
+    # tilt at MPC_TILTMAX_AIR (45 deg by default), so beyond ~18 m/s the
+    # attitude loop SATURATES, position hold is lost and the vehicle departs.
+    # This is not hypothetical: the 19 m/s held-out row (h4) failed to generate
+    # in BOTH gate v7 and gate v8 -- it was crashing, and we mislabelled it as a
+    # dropped trajectory. 12-16 keeps a >= 6 deg margin to the clamp while still
+    # producing the sustained model error the finite-memory structure needs.
+    ambient_turb_std: float = 1.0
+    ambient_turb_std_range: tuple = (1.0, 1.0)
     # LIGHT AMBIENT WIND, drawn per trajectory (2026-07-13). Measured effect:
     #   1.4-2.0 m/s -> NO effect (drag ~ v^2 puts the model error BELOW the
     #                  existing nominal residual of 0.2-0.6 m/s^2; verified on
@@ -502,31 +523,34 @@ class Config:
     # held-out (outside training ranges → generalization claim)
     heldout_mass_delta_range: tuple = (0.65, 0.75)   # superseded by heldout_plan
     heldout_plan: tuple = (
-        # PAPER TRAJECTORIES (deterministic; approved 2026-07-13).
-        # Rows 0/2/5 are the ones reported in the table AND drawn in the
-        # figures, so the reader can match a curve to a number. Rows 1/3/4/6
-        # are held in reserve for a rebuttal ("does it hold on other
-        # trajectories?"). The disturbance windows are placed explicitly, not
-        # drawn at random: this is experiment DESIGN (the phenomenon must be
-        # legible in a 45-s plot), not selection on the result.
+        # PAPER HELD-OUT SET (deterministic, 2026-07-13).
+        # THREE flight patterns x THREE scenarios = 9 trajectories. Table II
+        # reports, for each scenario, the mean over the three patterns, so a
+        # number is never an artefact of one particular path. The DISTURBANCE
+        # is held fixed within a scenario (same 15 m/s, same windows; same
+        # +70%, same CoM, same window) -- only the pattern varies, which is
+        # what makes the average meaningful.
+        # Figures use the figure-8 rows (h4 wind, h7 payload): the sharpest
+        # path, so the entry/recovery transients are the most legible.
         #
-        # (type, p_lo, p_hi, windows, extra)
-        #   windows : ((start_s, duration_s), ...)   [] = use the sampler
-        #   extra   : {"turb": ambient wind [m/s], "com": payload CoM offset [m]}
-        ("nominal", 0, 0, (), {"turb": 0.0}),               # 0  MAIN nominal (1 m/s)
-        ("nominal", 0, 0, (), {"turb": 0.0}),               # 1  reserve
-        ("sustained_wind", 16.0, 16.0,                      # 2  MAIN gust (FIG)
-         ((6.0, 10.0), (26.0, 10.0)), {"turb": 0.0}),
-        ("sustained_wind", 16.0, 16.0,                      # 3  reserve
-         ((8.0, 10.0), (28.0, 10.0)), {"turb": 0.0}),
-        ("sustained_wind", 19.0, 19.0,                      # 4  severe (reserve)
-         ((7.0, 11.0), (27.0, 11.0)), {"turb": 0.0}),
-        ("mass_step", 0.70, 0.70, ((15.0, 18.0),),          # 5  MAIN payload (FIG)
-         {"turb": 0.0, "com": 0.04}),
-        ("mass_step", 0.70, 0.70, ((15.0, 18.0),),          # 6  reserve
-         {"turb": 0.0, "com": 0.03}),
+        # (type, p_lo, p_hi, windows, extra{turb, com, pattern})
+        ("nominal", 0, 0, (), {"turb": 1.0, "pattern": "helical"}),        # 0
+        ("nominal", 0, 0, (), {"turb": 1.0, "pattern": "figure8"}),        # 1
+        ("nominal", 0, 0, (), {"turb": 1.0, "pattern": "waypoint"}),       # 2
+        ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 3
+         {"turb": 1.0, "pattern": "helical"}),
+        ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 4  FIG
+         {"turb": 1.0, "pattern": "figure8"}),
+        ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 5
+         {"turb": 1.0, "pattern": "waypoint"}),
+        ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 6
+         {"turb": 1.0, "com": 0.04, "pattern": "helical"}),
+        ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 7  FIG
+         {"turb": 1.0, "com": 0.04, "pattern": "figure8"}),
+        ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 8
+         {"turb": 1.0, "com": 0.04, "pattern": "waypoint"}),
     )
-    heldout_gust_speed_range: tuple = (20.0, 24.0)
+    heldout_gust_speed_range: tuple = (14.0, 17.0)   # was (20,24): tilt-clamp crash
     heldout_nlos_bias_range: tuple = (0.5, 0.7)  # stronger NLoS bias (still < gate)
     # dataset sizes
     n_train_traj: int = 200

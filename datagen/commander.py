@@ -39,7 +39,7 @@ from rclpy.qos import (QoSProfile, ReliabilityPolicy, DurabilityPolicy,
 from std_msgs.msg import String
 from nav_msgs.msg import Odometry
 from px4_msgs.msg import (OffboardControlMode, TrajectorySetpoint,
-                          VehicleCommand)
+                          VehicleCommand, VehicleStatus)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config                                # noqa: E402
@@ -76,6 +76,33 @@ class Commander(Node):
         self.pub_scenario = self.create_publisher(String, "/datagen/scenario", 10)
         self.pub_control = self.create_publisher(String, "/datagen/control", 10)
         self.create_subscription(Odometry, "/gt/odometry", self._cb_gt, qos_be)
+
+        # PX4 feedback. Without this the commander armed BLINDLY and re-sent the
+        # command every 2 s: right after an Isaac world reset PX4's EKF2 has to
+        # re-converge, arming is REJECTED until the pre-flight checks pass, and
+        # the old code simply spammed until it happened to succeed (the "Arm
+        # 재시도" loop). We now wait for the checks, then verify the result.
+        # PX4 publishes /fmu/out/* BEST_EFFORT + VOLATILE. A TRANSIENT_LOCAL
+        # subscriber is QoS-INCOMPATIBLE with a VOLATILE publisher, so the
+        # previous profile received NOTHING — that is why the log said
+        # "pre-flight unknown". VOLATILE fixes it.
+        qos_px4 = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST, depth=1)
+        # PX4 >= v1.16 publishes VERSIONED topics (vehicle_status_v1); older
+        # firmware uses the unversioned name. Subscribe to both — whichever
+        # exists will fire, the other stays silent. (This is why the previous
+        # log showed armed=False while the vehicle was visibly flying: the
+        # subscription pointed at a topic that this PX4 never publishes.)
+        for _topic in (f"{ns}/fmu/out/vehicle_status_v1",
+                       f"{ns}/fmu/out/vehicle_status"):
+            self.create_subscription(VehicleStatus, _topic,
+                                     self._cb_status, qos_px4)
+        self.px4_armed = False
+        self.px4_ready = False          # pre-flight checks pass
+        self.px4_offboard = False
+        self._arm_tries = 0
 
         # trajectory queue: (traj_id, split, heldout)
         self.queue = [(i, "train", False) for i in
@@ -139,6 +166,13 @@ class Commander(Node):
         m.from_external = True
         m.timestamp = 0
         self.pub_cmd.publish(m)
+
+    def _cb_status(self, msg):
+        self.px4_armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
+        self.px4_offboard = (msg.nav_state ==
+                             VehicleStatus.NAVIGATION_STATE_OFFBOARD)
+        # newer px4_msgs expose the pre-flight result; fall back gracefully
+        self.px4_ready = bool(getattr(msg, "pre_flight_checks_pass", True))
 
     def _arm_offboard(self):
         self._vehicle_cmd(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
@@ -230,25 +264,71 @@ class Commander(Node):
                 f"┗━ 외란: {self._scenario_desc(self.scenario)}")
             self._goto("STREAM")
 
-        elif self.state == "STREAM":                 # offboard heartbeat >= 1.5 s
+        elif self.state == "STREAM":
+            # Stream the offboard heartbeat + setpoint, and WAIT for PX4 to be
+            # ready before arming. PX4 requires (i) setpoints already flowing
+            # (>=2 Hz) BEFORE the OFFBOARD switch and (ii) the EKF2 estimate to
+            # have converged after the Isaac reset. Arming earlier is simply
+            # rejected. 3 s of heartbeat + the pre-flight flag removes the
+            # retry loop entirely; the 8 s cap keeps a stuck run from hanging.
             self._send_offboard()
             p0, _, yaw0 = self._pattern_ref(0.0)
             self._send_setpoint_enu(p0, None, yaw0)
-            if self.state_t > 1.5:
+            _ready = self.px4_ready and self.state_t > 3.0
+            if _ready or self.state_t > 8.0:
+                if not _ready:
+                    self.get_logger().warn(
+                        "  [TAKEOFF] pre-flight 미확인 — 8s 경과, 강행")
                 self._arm_offboard()
                 self.arm_resend_t = self.state_t
-                self.get_logger().info("  [TAKEOFF] Arm + OFFBOARD 전환 시도")
+                self._arm_tries = 1
+                self.get_logger().info(
+                    f"  [TAKEOFF] Arm + OFFBOARD 전환 (heartbeat {self.state_t:.1f}s, "
+                    f"pre-flight {'OK' if self.px4_ready else 'unknown'})")
                 self._goto("ASCEND")
 
-        elif self.state == "ASCEND":                 # climb & settle at start point
+        elif self.state == "ASCEND":
+            # TWO-PHASE ascend: (1) climb straight up at the CURRENT xy to the
+            # pattern altitude, (2) only then slide horizontally to the start
+            # point. Commanding a combined 3-m-lateral + 4-m-vertical jump at
+            # the instant of arming is what intermittently left the vehicle
+            # parked at the pattern centre with the horizontal error frozen at
+            # ~R0: PX4 accepted the z component but the lateral transition was
+            # never engaged. Splitting the motion removes that failure mode,
+            # and the nav_state now in the log tells us the mode if it recurs.
             self._send_offboard()
             p0, _, yaw0 = self._pattern_ref(0.0)
-            self._send_setpoint_enu(p0, None, yaw0)
-            if self.state_t - self.arm_resend_t > 2.0:      # re-send arm (repo habit)
+            # Ambient-wind-aware settle gate: at 3.5 m/s a hovering quad
+            # wanders 0.9-1.4 m, so the still-air 0.4 m tolerance is
+            # unreachable — that (not arming) caused the endless ASCEND loop.
+            _turb = float(self.scenario.get("ambient_turb_std", 0.0))
+            _tol = max(self.args.settle_tol, 0.45 * _turb)
+            if self.gt_pos is not None and self.gt_pos[2] < 0.8 * p0[2]:
+                _sp = np.array([self.gt_pos[0], self.gt_pos[1], p0[2]])  # phase 1
+            else:
+                _sp = p0                                                  # phase 2
+            self._send_setpoint_enu(_sp, None, yaw0)
+            if int(self.state_t) % 4 == 0 and abs(self.state_t - int(self.state_t)) < 0.03:
+                self.get_logger().info(
+                    f"  [ASCEND] armed={self.px4_armed} offboard={self.px4_offboard}")
+            if (self.px4_armed and not self.px4_offboard
+                    and self.state_t - self.arm_resend_t > 2.0):
+                self._vehicle_cmd(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+                self.arm_resend_t = self.state_t
+                self.get_logger().warn("  [ASCEND] OFFBOARD 재전환 (nav_state 미달)")
+            # Re-send ONLY if PX4 actually reports it is not armed/offboard.
+            # (The old code re-sent unconditionally every 2 s, which is what
+            # produced the "Arm 재시도" spam even on runs that were fine.)
+            if (not (self.px4_armed and self.px4_offboard)
+                    and self.state_t - self.arm_resend_t > 2.0):
                 self._arm_offboard()
                 self.arm_resend_t = self.state_t
+                self._arm_tries += 1
                 if not self._airborne:
-                    self.get_logger().info("  [TAKEOFF] Arm 재시도")
+                    self.get_logger().warn(
+                        f"  [TAKEOFF] Arm 재시도 #{self._arm_tries} "
+                        f"(armed={self.px4_armed}, offboard={self.px4_offboard}, "
+                        f"pre-flight={self.px4_ready})")
             # 이륙 감지 (online_rl_main 계승: 감지 순간 1회 로그)
             if not self._airborne and self.gt_seen and self.gt_pos[2] > 0.5:
                 self._airborne = True
@@ -260,9 +340,13 @@ class Commander(Node):
                 d0 = float(np.linalg.norm(self.gt_pos - p0))
                 self.get_logger().info(
                     f"  [ASCEND {self.state_t:4.1f}s] alt={self.gt_pos[2]:.2f} m, "
-                    f"시작점까지 {d0:.2f} m (tol {self.args.settle_tol})")
+                    f"시작점까지 {d0:.2f} m (tol {_tol:.2f})")
+            # Under an ambient airflow a hovering quad WANDERS: at 3.5 m/s the
+            # position error oscillates 0.9-1.4 m, so the still-air tolerance
+            # of 0.4 m is unreachable — this, not arming, was the endless
+            # ASCEND loop. Widen the gate with the scenario's own wind level.
             settled = self.gt_seen and \
-                np.linalg.norm(self.gt_pos - p0) < self.args.settle_tol
+                np.linalg.norm(self.gt_pos - p0) < _tol
             if settled and self.state_t > 4.0:
                 self.get_logger().info(
                     f"  ✅ 시작점 정착 (d={float(np.linalg.norm(self.gt_pos - p0)):.2f} m)"
@@ -271,9 +355,23 @@ class Commander(Node):
                 self.fly_t = 0.0
                 self._goto("FLY")
             elif self.state_t > 30.0:
-                self.get_logger().warn("ascend timeout — resetting & retrying")
-                self._control("reset")
-                self._goto("RESET_WAIT", retry=True)
+                # Do NOT reset: if the altitude is reached the vehicle is fine,
+                # merely being pushed around by the wind. Start the pattern —
+                # the tracking loop converges within a couple of seconds, and
+                # evaluation trims the first 6 s anyway. (The old reset+retry
+                # is what silently ATE trajectories h2/h4 from the last gate.)
+                if self.gt_seen and abs(self.gt_pos[2] - p0[2]) < 0.6:
+                    d0 = float(np.linalg.norm(self.gt_pos - p0))
+                    self.get_logger().warn(
+                        f"  [ASCEND] 정착 미달(d={d0:.2f}>{_tol:.2f})이지만 고도 도달"
+                        f" — 패턴 시작 (초반 과도는 평가에서 절삭)")
+                    self._control("start_log")
+                    self.fly_t = 0.0
+                    self._goto("FLY")
+                else:
+                    self.get_logger().warn("ascend timeout — resetting & retrying")
+                    self._control("reset")
+                    self._goto("RESET_WAIT", retry=True)
 
         elif self.state == "FLY":                    # log & fly the pattern
             self._send_offboard()
