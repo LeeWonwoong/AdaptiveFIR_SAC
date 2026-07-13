@@ -170,7 +170,21 @@ class Config:
                                         # "x nominal level"; disturbance reaches 2-3.5x
                                         # (measured: wind uwb x3, turb gyro x2-3) with
                                         # no saturation. Filter LS whitening unchanged.
-    resid_clip: float = 4.0             # whitened-residual clip [sigma units].
+    obs_log_compress: bool = True
+    obs_log_denom: float = 1.5
+    # OBSERVATION COMPRESSION (2026-07-13). Replaces the hard clip. The group
+    # innovation mu (=1 in calm flight) is HEAVY-TAILED: the attitude channel
+    # has median 0.15 but p99 ~ 17 and max ~ 23 during agile segments, so 3-6%
+    # of steps used to saturate the old clip at 4 -- which mapped mu=4.1 and
+    # mu=22 onto the same input. We instead apply
+    #       mu_tilde = log(1+mu) / (obs_log_denom + log(1+mu)),
+    # which is (i) strictly bounded in [0,1) so no clip is needed, (ii) MONOTONE
+    # so outliers stay distinguishable, and (iii) tail-compressing so a single
+    # transient cannot dominate the input. mu is a RATIO-scale quantity
+    # (multiples of the calm-flight level), and the log turns its multiplicative
+    # structure additive -- the natural transform. Mapping with denom=1.5:
+    #   calm mu=1 -> 0.32 | disturbance mu=4 -> 0.52 | outlier mu=22 -> 0.68.
+    resid_clip: float = 4.0             # (legacy path only) whitened-residual clip.
                                         # WAS 1.0 -> SATURATION BUG: clip applies AFTER
                                         # sigma-whitening, so nominal N(0,1) channels sat at
                                         # 1 sigma -> group norm ceiling 1.0 while nominal sits
@@ -320,6 +334,16 @@ class Config:
     # lateral velocity impulse at the coupling instant -> position error spike.
     mass_delta_range: tuple = (0.60, 0.90)     # STEP +60~90 % (centre +75 %: N* 14→6 measured)
     mass_onset_frac: tuple = (0.30, 0.60)      # coupling instant within trajectory
+    mass_com_offset_range: tuple = (0.02, 0.05)  # payload CoM offset [m], random direction
+    mass_inertia_scales: bool = True             # scale the inertia tensor with the mass
+    # PAYLOAD PHYSICS FIX (2026-07-13). Changing ONLY the scalar mass makes the
+    # payload a perfectly symmetric z-axis disturbance: the measured model-error
+    # acceleration rises 4x in z (a sustained -2.5 m/s^2 bias) but stays at the
+    # NOMINAL level in x,y -- so the estimators separate in z and coincide in
+    # x,y. That is an artifact, not physics: a real payload is not attached at
+    # the centre of mass. Offsetting the CoM by 2-5 cm makes the thrust vector
+    # miss the CoM, producing a parasitic torque -> attitude error -> genuine
+    # x,y model error, and the inertia tensor grows with the added mass.
     mass_impulse_z: tuple = (0.6, 1.2)         # downward velocity impulse [m/s] at coupling
     mass_impulse_xy: tuple = (0.3, 0.7)        # lateral velocity impulse [m/s]
     # gust: SHARP impulsive gusts (FM-SMC abrupt disturbance), not slow ramps
@@ -337,7 +361,25 @@ class Config:
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
     sustained_speed_range: tuple = (15.0, 20.0)
-    ambient_turb_std: float = 1.5
+    ambient_turb_std: float = 4.0
+    ambient_turb_std_range: tuple = (1.0, 5.0)
+    # LIGHT AMBIENT WIND, drawn per trajectory (2026-07-13). Measured effect:
+    #   1.4-2.0 m/s -> NO effect (drag ~ v^2 puts the model error BELOW the
+    #                  existing nominal residual of 0.2-0.6 m/s^2; verified on
+    #                  two Isaac gates: EKF 0.147->0.148, FME 0.123->0.123).
+    #   5.0 m/s     -> nominal error rises 0.15 -> 0.20 m, which finally
+    #                  exposes the RANGE NONLINEARITY: the UKF beats the EKF
+    #                  on ALL THREE AXES for the first time (0.193 vs 0.203),
+    #                  and N* drops 10 -> 6.
+    # RANGE 1.0-5.0 (user decision 2026-07-13): drawn per trajectory. NOTE the
+    # v^2 scaling means the low end (1-2 m/s) is effectively calm, so the
+    # per-trajectory effect is strongly skewed toward the upper half of the
+    # range; the nominal row of the table therefore averages over trajectories
+    # with and without a meaningful disturbance. Verify on the gate.
+    # Framing for the paper (indoor arena): this is NOT outdoor wind but a
+    # residual air disturbance -- rotor-wash recirculation off the walls and
+    # floor, ventilation currents, ground effect -- which is present in any
+    # real indoor flight and is what a perfectly still simulator omits.
     # ALWAYS-ON light turbulence [m/s], applied to EVERY trajectory including
     # nominal (2026-07-10). Rationale: a perfectly clean nominal makes the FIR
     # indistinguishable from the KF (both sit at the measurement-noise floor),
@@ -346,7 +388,11 @@ class Config:
     # PERSISTENT model error (~0.2-0.4 m/s^2), which is exactly the regime the
     # finite-memory structure is designed for. Expected: nominal chain
     # EKF > UKF > FIR > AFIR emerges naturally.
-    ambient_turb_bw: float = 2.0        # OU bandwidth [Hz]
+    ambient_turb_bw: float = 0.4
+    # OU bandwidth [Hz]. At 2.0 Hz the gust force decorrelates WITHIN one
+    # estimation window and the induced bias self-cancels; 0.4 Hz gives a
+    # ~2.5 s correlation time > the 1-s window, so the model error stays
+    # coherent long enough to penalize long memories.
     wind_n_windows: int = 2
     # sustained_wind: number of NON-overlapping wind windows per trajectory
     # (2026-07-10). 2 -> the estimator sees enter/recover TWICE, which makes the
