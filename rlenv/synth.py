@@ -60,12 +60,13 @@ def _plant_step(s, u, dt, m, J, g_vec, wind_acc, wn):
 
 
 # ─────────────────────────────── reference patterns (position, velocity, yaw)
-def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.60):
-    # w 0.50 -> 0.60 (2026-07-13): the reference is flown 1.2x faster on the
-    # SAME radius, so the centripetal demand a_h = R0*w^2 grows 1.44x
-    # (0.75 -> 1.08 m/s^2) and the vehicle banks at ~6.3 deg instead of ~4.4.
-    # Cruise speed stays modest (1.5 -> 1.8 m/s), so this is still a calm
-    # indoor flight, not an acrobatic one.
+def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.675):
+    # w 0.50 -> 0.675 (2026-07-13, final): 1.35x faster on the SAME radius.
+    # Centripetal demand a_h = R0*w^2 = 1.37 m/s^2 -> commanded bank ~7.9 deg.
+    # MEASURED at 1.2x (gate v8): the heavier payload vehicle still sagged to
+    # ~2.3 deg inside the window, so 1.2x was not enough for an x,y signature;
+    # 1.35x pushes the commanded bank ~26% higher while cruise speed stays a
+    # modest 2.0 m/s -- an agile but plausible indoor flight.
     # WHY THIS MATTERS: a payload mass error acts ALONG THE THRUST AXIS, so it
     # only reaches x,y through the tilt: a_xy = |dT/m| * sin(theta). Measured
     # |dT/m| = 5.18 m/s^2. In the measured payload window the vehicle banked
