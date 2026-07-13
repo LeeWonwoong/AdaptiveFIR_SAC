@@ -295,7 +295,7 @@ class Config:
     log_std_min: float = -5.0
     log_std_max: float = 2.0
     eval_every: int = 5_000             # vector steps
-    ckpt_every: int = 20_000
+    ckpt_every: int = 10_000
     ablation_fix_lambda: bool = False   # True → lambda := 1 (N-only ablation)
     ablation_fix_N: bool = False        # True → N := N_default (lambda-only ablation)
 

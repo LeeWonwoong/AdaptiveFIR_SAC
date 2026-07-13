@@ -115,6 +115,8 @@ class Commander(Node):
         self.state = "INIT"
         self.state_t = 0.0
         self.fly_t = 0.0
+        self.sim_now = 0.0
+        self.fly_t0_sim = -1.0
         self.scenario = None
         self.retry_count = 0
         self.MAX_RETRY = 3
@@ -135,6 +137,10 @@ class Commander(Node):
                           msg.pose.pose.position.y,
                           msg.pose.pose.position.z]
         self.gt_seen = True
+        _st = msg.header.stamp
+        _t = float(_st.sec) + float(_st.nanosec) * 1e-9
+        if _t > 0.0:
+            self.sim_now = _t
 
     def _send_offboard(self):
         m = OffboardControlMode()
@@ -353,6 +359,7 @@ class Commander(Node):
                     f" → FLY, 로깅 ON")
                 self._control("start_log")
                 self.fly_t = 0.0
+                self.fly_t0_sim = -1.0
                 self._goto("FLY")
             elif self.state_t > 30.0:
                 # Do NOT reset: if the altitude is reached the vehicle is fine,
@@ -367,6 +374,7 @@ class Commander(Node):
                         f" — 패턴 시작 (초반 과도는 평가에서 절삭)")
                     self._control("start_log")
                     self.fly_t = 0.0
+                    self.fly_t0_sim = -1.0
                     self._goto("FLY")
                 else:
                     self.get_logger().warn("ascend timeout — resetting & retrying")
@@ -375,9 +383,32 @@ class Commander(Node):
 
         elif self.state == "FLY":                    # log & fly the pattern
             self._send_offboard()
+            # ── SIM-TIME pattern phase (fix 2026-07-13) ──────────────────
+            # fly_t used to advance by the WALL-clock tick. The commander is
+            # paced by real time while Isaac runs at speed-up x (RTF): at an
+            # achieved RTF of 2.33 the pattern therefore unfolded 2.33x
+            # SLOWER in simulation time. Measured on the v9 dataset: mean
+            # speed 0.88-1.13 m/s vs the commanded 2.0, bank 2-4 deg vs the
+            # commanded ~8, and T = 2.33 x the planned 50 s. This single bug
+            # slowed every "faster trajectory" round (1.2x, 1.35x) and is why
+            # the payload x,y signature never materialised. The phase now
+            # advances with the simulation clock taken from the GT odometry
+            # header stamps; the wall tick remains only as a fallback when
+            # stamps are absent (sim_now stays 0).
+            if self.sim_now > 0.0:
+                if self.fly_t0_sim < 0.0:
+                    self.fly_t0_sim = self.sim_now
+                    self.get_logger().info(
+                        "  [FLY] pattern phase driven by SIM time (odometry stamps)")
+                self.fly_t = self.sim_now - self.fly_t0_sim
+            else:
+                if self.fly_t0_sim < 0.0:
+                    self.fly_t0_sim = 0.0
+                    self.get_logger().warn(
+                        "  [FLY] odometry stamps unavailable — wall-clock fallback")
+                self.fly_t += self.TICK
             p, v, yaw = self._pattern_ref(self.fly_t)
             self._send_setpoint_enu(p, v, yaw)
-            self.fly_t += self.TICK
             # ── 외란 창 전이 로그 (online_rl_main의 🔴 Attack ON / 🟢 OFF 계승):
             #    시나리오의 각 외란 창이 열리고 닫히는 순간을 1회씩 찍는다.
             flags = self._active_flags(self.fly_t)

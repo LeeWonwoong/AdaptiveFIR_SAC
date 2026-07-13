@@ -140,6 +140,9 @@ def main():
 
         if step % cfg.ckpt_every == 0 or step == cfg.total_steps:
             agent.save(os.path.join(cfg.outdir, "ckpt.pt"))
+            # step-stamped snapshot so intermediate policies (e.g. 30/40/50k)
+            # survive the rolling overwrite and can be compared after the run
+            agent.save(os.path.join(cfg.outdir, f"ckpt_{step}.pt"))
 
     agent.save(os.path.join(cfg.outdir, "ckpt.pt"))
     # learning curve
