@@ -90,8 +90,15 @@ class Commander(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST, depth=1)
-        self.create_subscription(VehicleStatus, f"{ns}/fmu/out/vehicle_status",
-                                 self._cb_status, qos_px4)
+        # PX4 >= v1.16 publishes VERSIONED topics (vehicle_status_v1); older
+        # firmware uses the unversioned name. Subscribe to both — whichever
+        # exists will fire, the other stays silent. (This is why the previous
+        # log showed armed=False while the vehicle was visibly flying: the
+        # subscription pointed at a topic that this PX4 never publishes.)
+        for _topic in (f"{ns}/fmu/out/vehicle_status_v1",
+                       f"{ns}/fmu/out/vehicle_status"):
+            self.create_subscription(VehicleStatus, _topic,
+                                     self._cb_status, qos_px4)
         self.px4_armed = False
         self.px4_ready = False          # pre-flight checks pass
         self.px4_offboard = False
@@ -291,6 +298,11 @@ class Commander(Node):
             # and the nav_state now in the log tells us the mode if it recurs.
             self._send_offboard()
             p0, _, yaw0 = self._pattern_ref(0.0)
+            # Ambient-wind-aware settle gate: at 3.5 m/s a hovering quad
+            # wanders 0.9-1.4 m, so the still-air 0.4 m tolerance is
+            # unreachable — that (not arming) caused the endless ASCEND loop.
+            _turb = float(self.scenario.get("ambient_turb_std", 0.0))
+            _tol = max(self.args.settle_tol, 0.45 * _turb)
             if self.gt_pos is not None and self.gt_pos[2] < 0.8 * p0[2]:
                 _sp = np.array([self.gt_pos[0], self.gt_pos[1], p0[2]])  # phase 1
             else:
@@ -328,9 +340,13 @@ class Commander(Node):
                 d0 = float(np.linalg.norm(self.gt_pos - p0))
                 self.get_logger().info(
                     f"  [ASCEND {self.state_t:4.1f}s] alt={self.gt_pos[2]:.2f} m, "
-                    f"시작점까지 {d0:.2f} m (tol {self.args.settle_tol})")
+                    f"시작점까지 {d0:.2f} m (tol {_tol:.2f})")
+            # Under an ambient airflow a hovering quad WANDERS: at 3.5 m/s the
+            # position error oscillates 0.9-1.4 m, so the still-air tolerance
+            # of 0.4 m is unreachable — this, not arming, was the endless
+            # ASCEND loop. Widen the gate with the scenario's own wind level.
             settled = self.gt_seen and \
-                np.linalg.norm(self.gt_pos - p0) < self.args.settle_tol
+                np.linalg.norm(self.gt_pos - p0) < _tol
             if settled and self.state_t > 4.0:
                 self.get_logger().info(
                     f"  ✅ 시작점 정착 (d={float(np.linalg.norm(self.gt_pos - p0)):.2f} m)"
@@ -339,9 +355,23 @@ class Commander(Node):
                 self.fly_t = 0.0
                 self._goto("FLY")
             elif self.state_t > 30.0:
-                self.get_logger().warn("ascend timeout — resetting & retrying")
-                self._control("reset")
-                self._goto("RESET_WAIT", retry=True)
+                # Do NOT reset: if the altitude is reached the vehicle is fine,
+                # merely being pushed around by the wind. Start the pattern —
+                # the tracking loop converges within a couple of seconds, and
+                # evaluation trims the first 6 s anyway. (The old reset+retry
+                # is what silently ATE trajectories h2/h4 from the last gate.)
+                if self.gt_seen and abs(self.gt_pos[2] - p0[2]) < 0.6:
+                    d0 = float(np.linalg.norm(self.gt_pos - p0))
+                    self.get_logger().warn(
+                        f"  [ASCEND] 정착 미달(d={d0:.2f}>{_tol:.2f})이지만 고도 도달"
+                        f" — 패턴 시작 (초반 과도는 평가에서 절삭)")
+                    self._control("start_log")
+                    self.fly_t = 0.0
+                    self._goto("FLY")
+                else:
+                    self.get_logger().warn("ascend timeout — resetting & retrying")
+                    self._control("reset")
+                    self._goto("RESET_WAIT", retry=True)
 
         elif self.state == "FLY":                    # log & fly the pattern
             self._send_offboard()
