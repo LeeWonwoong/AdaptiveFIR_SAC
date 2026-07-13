@@ -513,7 +513,7 @@ class Config:
         # (type, p_lo, p_hi, windows, extra)
         #   windows : ((start_s, duration_s), ...)   [] = use the sampler
         #   extra   : {"turb": ambient wind [m/s], "com": payload CoM offset [m]}
-        ("nominal", 0, 0, (), {"turb": 3.5}),               # 0  MAIN nominal
+        ("nominal", 0, 0, (), {"turb": 1.0}),               # 0  MAIN nominal (1 m/s)
         ("nominal", 0, 0, (), {"turb": 3.0}),               # 1  reserve
         ("sustained_wind", 16.0, 16.0,                      # 2  MAIN gust (FIG)
          ((6.0, 10.0), (26.0, 10.0)), {"turb": 3.5}),
