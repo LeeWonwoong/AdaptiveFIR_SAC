@@ -41,9 +41,16 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
         _dr = getattr(cfg, "mass_window_duration_range", None)
         _du = float(rng.uniform(*_dr)) if _dr else float(dur - _on)
         _du = min(_du, dur - _on - 2.0)          # release inside the traj
+        _co = getattr(cfg, "mass_com_offset_range", None)
+        _cm = float(rng.uniform(*_co)) if _co else 0.0
+        _cdir = float(rng.uniform(0, 2 * np.pi))
         return {"delta": float(rng.uniform(*_mr)),
                 "duration_s": _du,
                 "onset_s": _on,
+                # payload is NOT attached at the CoM: offset magnitude [m] and
+                # direction in the body xy-plane (parasitic torque -> x,y error)
+                "com_offset": _cm,
+                "com_dir": _cdir,
                 "impulse_z": float(rng.uniform(*cfg.mass_impulse_z)),
                 "impulse_xy": float(rng.uniform(*cfg.mass_impulse_xy)),
                 "impulse_dir": float(rng.uniform(0, 2 * np.pi))}

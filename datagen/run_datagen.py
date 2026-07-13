@@ -121,6 +121,7 @@ class DatagenApp:
         _spec = _ilu.spec_from_file_location("afir_project_config", _cfg_path)
         _mod = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mod)
         _c = _mod.Config()
+        self._cfg = _c
         self.amb_turb = float(getattr(_c, "ambient_turb_std", 0.0))
         self.amb_bw = float(getattr(_c, "ambient_turb_bw", 2.0))
         self.wind = WindModel({}, turb_intensity=self.amb_turb,
@@ -175,9 +176,16 @@ class DatagenApp:
             self.scenario = d
             self.split = d.get("split", "train")
             self.traj_id = int(d.get("traj_id", self.traj_id))
+            # light ambient wind, drawn PER TRAJECTORY (see config)
+            _tr = getattr(self._cfg, "ambient_turb_std_range", None)
+            if _tr:
+                _rng = np.random.default_rng(int(d.get("seed", 0)) + 9973)
+                _ti = float(_rng.uniform(*_tr))
+            else:
+                _ti = self.amb_turb
+            d["ambient_turb_std"] = _ti          # log it into the scenario meta
             self.wind = WindModel(d, seed=int(d.get("seed", 0)),
-                                  turb_intensity=self.amb_turb,
-                                  turb_bw=self.amb_bw)
+                                  turb_intensity=_ti, turb_bw=self.amb_bw)
             self.mass_applied = False
             self._set_mass(self.mass_nominal)
             carb.log_warn(f"[datagen] scenario #{self.traj_id} "
@@ -220,20 +228,40 @@ class DatagenApp:
                 prim_paths_expr="/World/quadrotor/body", name="body_view")
             self.world.scene.add(self.body_view)
             self.body_view.initialize()
+            try:
+                self._inertia_nom = np.array(self.body_view.get_inertias())
+            except Exception:
+                self._inertia_nom = None
         except Exception as e:
             carb.log_error(f"body_view init failed: {e}")
+            self._inertia_nom = None
 
-    def _set_mass(self, m):
-        """TRUE-mass injection (scenario 'mass_step'); PX4 keeps believing the
-        nominal airframe — exactly the payload-pickup model mismatch we want."""
+    def _set_mass(self, m, com=None, inertia_scale=None):
+        """TRUE payload injection (scenario 'mass_step'); PX4 keeps believing
+        the nominal airframe — the model mismatch we want.
+
+        A payload is not attached at the centre of mass, so besides the scalar
+        mass we shift the CoM and grow the inertia tensor. The offset CoM makes
+        the thrust vector produce a parasitic torque, which the attitude loop
+        must fight — this is what puts REAL model error on x and y as well,
+        instead of the artificial z-only disturbance a mass-only change gives.
+        """
         try:
-            if self.body_view:
-                self.body_view.set_masses(np.array([m], dtype=np.float32))
+            if not self.body_view:
+                return
+            self.body_view.set_masses(np.array([m], dtype=np.float32))
+            if com is not None:
+                self.body_view.set_coms(
+                    np.array([com], dtype=np.float32).reshape(1, 3),
+                    np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32))
+            if inertia_scale is not None and self._inertia_nom is not None:
+                self.body_view.set_inertias(
+                    (self._inertia_nom * float(inertia_scale)).astype(np.float32))
         except Exception as e:
-            carb.log_error(f"set_masses failed: {e}")
+            carb.log_error(f"payload injection failed: {e}")
 
     def _do_reset(self):
-        self._set_mass(self.mass_nominal)
+        self._set_mass(self.mass_nominal, com=[0.0, 0.0, 0.0], inertia_scale=1.0)
         self.mass_applied = False
         self.world.reset()
         self.needs_reset = False
@@ -268,14 +296,19 @@ class DatagenApp:
                 if _in_win:
                     m_true = self.mass_nominal * (1.0 + _m["delta"])
                     if not self.mass_applied:
-                        self._set_mass(m_true)
+                        _off = float(_m.get("com_offset", 0.0))
+                        _dir = float(_m.get("com_dir", 0.0))
+                        _com = [_off * np.cos(_dir), _off * np.sin(_dir), 0.0]
+                        self._set_mass(m_true, com=_com,
+                                       inertia_scale=1.0 + _m["delta"])
                         self.mass_applied = True
                         carb.log_warn(
                             f"[MASS] 🔴 PICKUP {self.mass_nominal:.3f} → "
                             f"{m_true:.3f} kg (+{100 * _m['delta']:.0f}%) "
                             f"@ t={t_traj:.1f}s — PX4는 nominal 신뢰 (실물리 payload)")
                 elif self.mass_applied and t_traj > _end:
-                    self._set_mass(self.mass_nominal)
+                    self._set_mass(self.mass_nominal, com=[0.0, 0.0, 0.0],
+                                   inertia_scale=1.0)
                     self.mass_applied = False
                     carb.log_warn(
                         f"[MASS] 🟢 RELEASE → {self.mass_nominal:.3f} kg "
