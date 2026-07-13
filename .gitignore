@@ -1,3 +1,11 @@
 __pycache__/
 *.pyc
 .claude/settings.local.json.tmp.*
+
+# Data (excluded from repo)
+data_*/
+*.zip
+results/**/*.npz
+results/**/*.png
+results/**/*.csv
+results/cm_test_indep/gm_decomp/
