@@ -82,9 +82,13 @@ class Commander(Node):
         # re-converge, arming is REJECTED until the pre-flight checks pass, and
         # the old code simply spammed until it happened to succeed (the "Arm
         # 재시도" loop). We now wait for the checks, then verify the result.
+        # PX4 publishes /fmu/out/* BEST_EFFORT + VOLATILE. A TRANSIENT_LOCAL
+        # subscriber is QoS-INCOMPATIBLE with a VOLATILE publisher, so the
+        # previous profile received NOTHING — that is why the log said
+        # "pre-flight unknown". VOLATILE fixes it.
         qos_px4 = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST, depth=1)
         self.create_subscription(VehicleStatus, f"{ns}/fmu/out/vehicle_status",
                                  self._cb_status, qos_px4)
@@ -276,10 +280,30 @@ class Commander(Node):
                     f"pre-flight {'OK' if self.px4_ready else 'unknown'})")
                 self._goto("ASCEND")
 
-        elif self.state == "ASCEND":                 # climb & settle at start point
+        elif self.state == "ASCEND":
+            # TWO-PHASE ascend: (1) climb straight up at the CURRENT xy to the
+            # pattern altitude, (2) only then slide horizontally to the start
+            # point. Commanding a combined 3-m-lateral + 4-m-vertical jump at
+            # the instant of arming is what intermittently left the vehicle
+            # parked at the pattern centre with the horizontal error frozen at
+            # ~R0: PX4 accepted the z component but the lateral transition was
+            # never engaged. Splitting the motion removes that failure mode,
+            # and the nav_state now in the log tells us the mode if it recurs.
             self._send_offboard()
             p0, _, yaw0 = self._pattern_ref(0.0)
-            self._send_setpoint_enu(p0, None, yaw0)
+            if self.gt_pos is not None and self.gt_pos[2] < 0.8 * p0[2]:
+                _sp = np.array([self.gt_pos[0], self.gt_pos[1], p0[2]])  # phase 1
+            else:
+                _sp = p0                                                  # phase 2
+            self._send_setpoint_enu(_sp, None, yaw0)
+            if int(self.state_t) % 4 == 0 and abs(self.state_t - int(self.state_t)) < 0.03:
+                self.get_logger().info(
+                    f"  [ASCEND] armed={self.px4_armed} offboard={self.px4_offboard}")
+            if (self.px4_armed and not self.px4_offboard
+                    and self.state_t - self.arm_resend_t > 2.0):
+                self._vehicle_cmd(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+                self.arm_resend_t = self.state_t
+                self.get_logger().warn("  [ASCEND] OFFBOARD 재전환 (nav_state 미달)")
             # Re-send ONLY if PX4 actually reports it is not armed/offboard.
             # (The old code re-sent unconditionally every 2 s, which is what
             # produced the "Arm 재시도" spam even on runs that were fine.)
