@@ -60,7 +60,20 @@ def _plant_step(s, u, dt, m, J, g_vec, wind_acc, wn):
 
 
 # ─────────────────────────────── reference patterns (position, velocity, yaw)
-def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.5):
+def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.60):
+    # w 0.50 -> 0.60 (2026-07-13): the reference is flown 1.2x faster on the
+    # SAME radius, so the centripetal demand a_h = R0*w^2 grows 1.44x
+    # (0.75 -> 1.08 m/s^2) and the vehicle banks at ~6.3 deg instead of ~4.4.
+    # Cruise speed stays modest (1.5 -> 1.8 m/s), so this is still a calm
+    # indoor flight, not an acrobatic one.
+    # WHY THIS MATTERS: a payload mass error acts ALONG THE THRUST AXIS, so it
+    # only reaches x,y through the tilt: a_xy = |dT/m| * sin(theta). Measured
+    # |dT/m| = 5.18 m/s^2. In the measured payload window the vehicle banked
+    # only 1-2 deg (a heavier vehicle tracks the reference more sluggishly and
+    # banks LESS), so the horizontal share was ~0.12 m/s^2 -- BELOW the
+    # 0.18 m/s^2 nominal residual. That is the whole reason the payload looked
+    # like a pure z-axis disturbance. At 6.3 deg the share is 0.57 m/s^2,
+    # ~3x the residual, and the payload shows up on all three axes.
     if pattern == "hover":
         return c, np.zeros(3), 0.0
     if pattern == "circle":
