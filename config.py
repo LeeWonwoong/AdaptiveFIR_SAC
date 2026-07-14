@@ -166,8 +166,8 @@ class Config:
                                         #  "UWB trouble (dropout/NLoS)" from "IMU trouble").
                                         # False → legacy per-channel residual vector.
     n_obs_groups: int = 3               # UWB / attitude / gyro
-    obs_group_scale: tuple = (1.2, 1.2, 5.9)
-    # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9c nominal heldout
+    obs_group_scale: tuple = (1.16, 1.15, 6.47)
+    # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9d (1.0x, w=0.5) nominal heldout
     #   (WFME N=6 innovations, whitened group norms over 6-48 s, 3 patterns,
     #   MEDIAN estimator -- the typical calm level. RMS/mean is rejected: the
     #   attitude channel is so heavy-tailed in agile flight (RMS 31 vs median
