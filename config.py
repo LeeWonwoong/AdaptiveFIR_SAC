@@ -160,7 +160,21 @@ class Config:
                                         #  "UWB trouble (dropout/NLoS)" from "IMU trouble").
                                         # False → legacy per-channel residual vector.
     n_obs_groups: int = 3               # UWB / attitude / gyro
-    obs_group_scale: tuple = (1.0, 8.0, 12.0)
+    obs_group_scale: tuple = (1.2, 1.2, 5.9)
+    # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9c nominal heldout
+    #   (WFME N=6 innovations, whitened group norms over 6-48 s, 3 patterns,
+    #   MEDIAN estimator -- the typical calm level. RMS/mean is rejected: the
+    #   attitude channel is so heavy-tailed in agile flight (RMS 31 vs median
+    #   1.2) that a mean-based scale would be set by a handful of manoeuvre
+    #   spikes and push the typical level to eps~1e-3, blinding the channel;
+    #   the tail is exactly what the log compression is for). The stale
+    #   values (1.0, 8.0, 12.0) came from the old slow-trajectory system
+    #   and left the attitude/gyro channels at eps=0.02/0.24 in calm v9c
+    #   flight -- compressed to ~0, i.e. the policy was BLIND on the two
+    #   channels that carry the wind/payload signature (measured window
+    #   contrast with corrected sbar: wind eps=(2.5,1.5,6.4), payload
+    #   eps=(1.3,1.8,8.4)). Re-estimate whenever the trajectory regime or
+    #   sensor setup changes.
                                         # ISAAC-MEASURED nominal whitened-norm levels
                                         # (uwb ~1.1-1.3 | att ~2-16 pattern-dep | gyro
                                         #  ~10-22): IMU innovations are MODEL-error
