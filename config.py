@@ -244,7 +244,15 @@ class Config:
                                         # Positive scaling => optimal policy UNCHANGED
                                         # (reward scale is SAC's canonical knob).
     reward_sq_clip: float = 100.0       # cap of the scaled squared cost (e=2 m sat.)
-    reward_mode: str = "sq"             # "sq": r = -(min(e,2)/e0)^2  (DEFAULT)
+    reward_mode: str = "lin"            # "lin" (2026-07-14): r = -min(e, clip).
+    # Switched from "sq": the squared reward over-weights the large-error
+    # transients (rn^2 ~ 2-20 inside gust/payload windows vs ~0.5 in calm
+    # flight), so SAC converged to a transient-only policy -- lambda pinned at
+    # 0.74-0.79 and N stuck mid-range, discarding the calm-segment noise
+    # averaging where the measured adaptation headroom is largest (Greedy-GT
+    # oracle on v9c heldout: nominal -17.8%, payload -15.7%, wind -6.4%,
+    # oracle mean N ~ 11). The paper metric (per-scenario RMSE, scenarios
+    # equally weighted) is linear in |e|; the linear reward matches it.
                                         #   quadratic cost == direct RMSE minimization
                                         #   (the reported metric IS the square metric),
                                         #   and it amplifies the disturbance-window signal
