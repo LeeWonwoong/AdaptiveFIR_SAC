@@ -172,6 +172,23 @@ class Config:
                                         # no saturation. Filter LS whitening unchanged.
     obs_log_compress: bool = True
     obs_log_denom: float = 1.5
+    obs_squared_stat: bool = True
+    # FROZEN-NIS OBSERVATION (2026-07-13, final). With the flag ON the per-
+    # group statistic is the SQUARED whitened innovation norm normalised by
+    # the nominal innovation level:
+    #     eps_i = ||nu_i||^2_{R^-1} / (d_i * gbar_i^2)
+    #           = nu_i' Sbar_i^{-1} nu_i / d_i,
+    # i.e. the group-wise NIS computed with the innovation covariance Sbar
+    # FROZEN at its calm-flight estimate (gbar^2 = tr(Sbar R^-1)/d, the values
+    # in obs_group_scale). E[eps]=1 in calm flight BY CONSTRUCTION. We freeze
+    # Sbar instead of using the window-dependent H P H' + R on purpose: the
+    # live S shrinks/grows with the agent's own memory choice N, which would
+    # let the policy attenuate its alarm signal by shortening the window
+    # (observation-action coupling) instead of reacting to the disturbance.
+    # Squared features also empirically outperform linear ones in learned
+    # filtering (Recursive KalmanNet, 2025), consistent with the quadratic
+    # nature of the underlying covariances. Flag OFF restores the legacy RMS
+    # statistic (v4-validated) without touching the data.
     # OBSERVATION COMPRESSION (2026-07-13). Replaces the hard clip. The group
     # innovation mu (=1 in calm flight) is HEAVY-TAILED: the attitude channel
     # has median 0.15 but p99 ~ 17 and max ~ 23 during agile segments, so 3-6%
