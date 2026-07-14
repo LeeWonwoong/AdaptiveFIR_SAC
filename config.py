@@ -77,9 +77,9 @@ class Config:
     # R≈0.2 m² per anchor, INFME-adjacent). This is the FIXED noise statistic
     # every model-based filter (FME whitening, EKF/UKF R) BELIEVES — it does NOT
     # know the NLoS σ jump, which is the whole point of [수정C].
-    meas_sigma: tuple = (0.10, 0.10, 0.10, 0.10,      # UWB LoS [m]
-                         0.02, 0.02, 0.02,           # IMU attitude [rad] (FCU estimate)
-                         0.01, 0.01, 0.01)           # IMU gyro [rad/s]
+    meas_sigma: tuple = (0.10, 0.10, 0.10, 0.10,
+                         0.01, 0.01, 0.01,
+                         0.005, 0.005, 0.005)
 
     # ══════════════════════════════════════════════════════════
     #  Weighted FME (filter)
@@ -166,8 +166,8 @@ class Config:
                                         #  "UWB trouble (dropout/NLoS)" from "IMU trouble").
                                         # False → legacy per-channel residual vector.
     n_obs_groups: int = 3               # UWB / attitude / gyro
-    obs_group_scale: tuple = (1.16, 1.15, 6.47)
-    # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9d (1.0x, w=0.5) nominal heldout
+    obs_group_scale: tuple = (1.14, 1.41, 12.14)
+    # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9e (0.8x, w=0.4, IMU att 0.01 / gyr 0.005) nominal heldout
     #   (WFME N=6 innovations, whitened group norms over 6-48 s, 3 patterns,
     #   MEDIAN estimator -- the typical calm level. RMS/mean is rejected: the
     #   attitude channel is so heavy-tailed in agile flight (RMS 31 vs median
