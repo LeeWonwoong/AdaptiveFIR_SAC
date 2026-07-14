@@ -143,6 +143,10 @@ class VectorReplayEnv:
             # normalize by the Isaac-measured CALM-FLIGHT innovation level, so
             # mu reads as a multiple of nominal (1 = calm, 2-4 = disturbance).
             head = head / self.grp_scale
+            if getattr(self.cfg, "obs_squared_stat", False):
+                # frozen-NIS: eps = nu' Sbar^{-1} nu / d  (see config note);
+                # squaring the gbar-normalised RMS norm gives exactly that.
+                head = head ** 2
             if getattr(self.cfg, "obs_log_compress", False):
                 # LOG COMPRESSION (2026-07-13), replaces the hard clip:
                 #   mu~ = log(1+mu) / (denom + log(1+mu))  in [0,1)
