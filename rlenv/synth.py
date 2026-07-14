@@ -60,8 +60,15 @@ def _plant_step(s, u, dt, m, J, g_vec, wind_acc, wn):
 
 
 # ─────────────────────────────── reference patterns (position, velocity, yaw)
-def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.675):
-    # w 0.50 -> 0.675 (2026-07-13, final): 1.35x faster on the SAME radius.
+def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.575):
+    # w 0.675 -> 0.575 (2026-07-14, 1.15x of the original 0.50). At 1.35x the
+    # persistent drag transients made SHORT effective memory causally optimal
+    # even in nominal flight (five independent SAC runs converged to N~5,
+    # lam~0.78, incl. one STARTED at N=16/lam=0.99), so the adaptive method
+    # had no realisable headroom over fixed N=6. 1.15x restores the regime
+    # where nominal favours long memory while disturbances force short --
+    # the contrast AFME exists to exploit. Accepted trade-off (user call):
+    # the nominal EKF/UKF ordering may return to a statistical tie.
     # Centripetal demand a_h = R0*w^2 = 1.37 m/s^2 -> commanded bank ~7.9 deg.
     # MEASURED at 1.2x (gate v8): the heavier payload vehicle still sagged to
     # ~2.3 deg inside the window, so 1.2x was not enough for an x,y signature;
