@@ -88,7 +88,13 @@ class Config:
     N_max: int = 20                     # ring-buffer length W (fixed shape). At the
                                         # CALIBRATED process noise q0 the nominal N_opt≈14
                                         # (DI-FME choice) sits mid-range → real headroom.
-    lam_min: float = 0.7                # Omega > 0 (unbiasedness Lemma premise)
+    lam_min: float = 0.7
+    # IFIABLE -- (N=5,lam=0.8), (N=4,lam=1), (N=7,lam=0.7) give nearly the same
+    # effective memory, so the Q-landscape has a ridge along constant-memory
+    # contours and SAC parks lambda at an arbitrary low value (measured 0.72-
+    # 0.80 across three runs), which then blocks the long-memory corner
+    # (N>=10 AND lam~1) the oracle uses. Restricting lambda to [0.9, 1] makes
+    # N the memory-length control and lambda a within-window weighting trim.                # Omega > 0 (unbiasedness Lemma premise)
     # Inversion policy: PLAIN inverse (never SVD). ridge_eps is a RELATIVE
     # Tikhonov floor on the observable-block normal matrices (stage-1 He^T W He
     # and stage-2 Om). Principle (mode 3): keep it MINIMAL (1e-8) so the solve
@@ -334,7 +340,7 @@ class Config:
     log_std_min: float = -5.0
     log_std_max: float = 2.0
     eval_every: int = 5_000             # vector steps
-    ckpt_every: int = 10_000
+    ckpt_every: int = 5_000
     ablation_fix_lambda: bool = False   # True → lambda := 1 (N-only ablation)
     ablation_fix_N: bool = False        # True → N := N_default (lambda-only ablation)
 
