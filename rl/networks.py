@@ -27,6 +27,25 @@ class Actor(nn.Module):
         self.mu = nn.Linear(hidden, act_dim)
         self.log_std = nn.Linear(hidden, act_dim)
         self.lo, self.hi = log_std_min, log_std_max
+        # LONG-MEMORY INITIALISATION (2026-07-14). Four independent runs
+        # (sq/lin rewards, old/new obs scales) all converged to the same
+        # short-effective-memory basin: lambda pinned at 0.72-0.80, N ~ 5,
+        # while the greedy-GT oracle sits at N ~ 11 with near-unity lambda
+        # (nominal headroom -17.8%). The cause is a geometry problem, not a
+        # reward problem: (N, lambda) combinations with equal effective
+        # memory form a ridge, and the long-memory corner (N high AND
+        # lambda ~ 1) is unreachable by local exploration because shortening
+        # memory pays off immediately (transients) while lengthening pays
+        # off only through slowly accumulated calm-segment averaging. Fix:
+        # START the policy in the long-memory corner -- bias the pre-tanh
+        # action means to (a1, a2) ~ (+0.5, +1.5) => N ~ round(12+8*tanh(.5))
+        # ~ 16, lambda ~ 0.85+0.15*tanh(1.5) ~ 0.98 -- and let the reward
+        # teach the easy direction (dropping N inside disturbances). The
+        # action RANGE is unchanged; only the starting point moves.
+        if act_dim >= 2:
+            with torch.no_grad():
+                self.mu.bias.data[0] = 0.5    # N head
+                self.mu.bias.data[1] = 1.5    # lambda head
 
     def forward(self, o):
         h = self.trunk(o)
