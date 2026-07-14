@@ -116,6 +116,7 @@ class Commander(Node):
         self.state_t = 0.0
         self.fly_t = 0.0
         self.sim_now = 0.0
+        self._gt_n = 0
         self.fly_t0_sim = -1.0
         self.scenario = None
         self.retry_count = 0
@@ -137,10 +138,16 @@ class Commander(Node):
                           msg.pose.pose.position.y,
                           msg.pose.pose.position.z]
         self.gt_seen = True
-        _st = msg.header.stamp
-        _t = float(_st.sec) + float(_st.nanosec) * 1e-9
-        if _t > 0.0:
-            self.sim_now = _t
+        # SIM time from the MESSAGE COUNT, not the stamp. run_datagen emits
+        # exactly one GT message per 0.02 s of SIMULATION time (the same
+        # 50 Hz block that writes the dataset row), but stamps it with the
+        # node WALL clock — so the stamp advances at wall rate and its
+        # relation to sim time depends on the achieved RTF. That is why the
+        # stamp-based fix looked correct on a loaded machine (RTF ~ 1) and
+        # silently regressed to the 116-s trajectories on an idle one
+        # (RTF ~ 2.3). Counting messages is invariant to RTF by construction.
+        self._gt_n += 1
+        self.sim_now = self._gt_n * 0.02
 
     def _send_offboard(self):
         m = OffboardControlMode()
@@ -400,7 +407,7 @@ class Commander(Node):
                 if self.fly_t0_sim < 0.0:
                     self.fly_t0_sim = self.sim_now
                     self.get_logger().info(
-                        "  [FLY] pattern phase driven by SIM time (odometry stamps)")
+                        "  [FLY] pattern phase driven by SIM time (GT message count, RTF-invariant)")
                 self.fly_t = self.sim_now - self.fly_t0_sim
             else:
                 if self.fly_t0_sim < 0.0:
