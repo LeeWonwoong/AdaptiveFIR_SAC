@@ -167,7 +167,7 @@ class Config:
                                         # False → legacy per-channel residual vector.
     n_obs_groups: int = 2               # UWB / attitude  (gyro dropped)
     obs_drop_gyro: bool = True          # exclude gyro group from observation
-    obs_group_scale: tuple = (1.14, 1.74, 14.32)
+    obs_group_scale: tuple = (1.13, 1.7, 14.32)
     # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9e (0.8x, w=0.4, IMU att 0.01 / gyr 0.005) nominal heldout
     #   (WFME N=6 innovations, whitened group norms over 6-48 s, 3 patterns,
     #   MEDIAN estimator -- the typical calm level. RMS/mean is rejected: the
