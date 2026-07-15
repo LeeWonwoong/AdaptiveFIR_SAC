@@ -165,8 +165,9 @@ class Config:
                                         # (user-selected option 3; groups let SAC tell
                                         #  "UWB trouble (dropout/NLoS)" from "IMU trouble").
                                         # False → legacy per-channel residual vector.
-    n_obs_groups: int = 3               # UWB / attitude / gyro
-    obs_group_scale: tuple = (1.14, 1.41, 12.14)
+    n_obs_groups: int = 2               # UWB / attitude  (gyro dropped)
+    obs_drop_gyro: bool = True          # exclude gyro group from observation
+    obs_group_scale: tuple = (1.14, 1.74, 14.32)
     # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9e (0.8x, w=0.4, IMU att 0.01 / gyr 0.005) nominal heldout
     #   (WFME N=6 innovations, whitened group norms over 6-48 s, 3 patterns,
     #   MEDIAN estimator -- the typical calm level. RMS/mean is rejected: the
@@ -190,9 +191,9 @@ class Config:
                                         # "x nominal level"; disturbance reaches 2-3.5x
                                         # (measured: wind uwb x3, turb gyro x2-3) with
                                         # no saturation. Filter LS whitening unchanged.
-    obs_log_compress: bool = True
+    obs_log_compress: bool = False
     obs_log_denom: float = 1.5
-    obs_squared_stat: bool = True
+    obs_squared_stat: bool = False
     # FROZEN-NIS OBSERVATION (2026-07-13, final). With the flag ON the per-
     # group statistic is the SQUARED whitened innovation norm normalised by
     # the nominal innovation level:
@@ -250,7 +251,7 @@ class Config:
                                         # Positive scaling => optimal policy UNCHANGED
                                         # (reward scale is SAC's canonical knob).
     reward_sq_clip: float = 100.0       # cap of the scaled squared cost (e=2 m sat.)
-    reward_mode: str = "lin"            # "lin" (2026-07-14): r = -min(e, clip).
+    reward_mode: str = "sq"            # "lin" (2026-07-14): r = -min(e, clip).
     # Switched from "sq": the squared reward over-weights the large-error
     # transients (rn^2 ~ 2-20 inside gust/payload windows vs ~0.5 in calm
     # flight), so SAC converged to a transient-only policy -- lambda pinned at

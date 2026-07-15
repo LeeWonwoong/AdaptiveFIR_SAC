@@ -214,16 +214,28 @@ def main():
     _q_fix = list(getattr(cfg, "kf_Q_diag",
                           (1e-6,) * 3 + (2e-3,) * 3 + (1e-5,) * 3 + (2e-4,) * 3))
     _r_fix = list(cfg.meas_sigma)
+    # FINAL paper protocol (2026-07-14): both KFs use the grid-searched
+    # constants validated on the v9 gates — Q = 2e-3 I12 for both; EKF keeps
+    # the datasheet R, the UKF uses alpha=2, beta=2, kappa=0 and R_uwb x0.85
+    # (its own grid optimum). Identical for every scenario.
+    _q_gate = [2e-3] * 12
+    _r_ukf = list(cfg.meas_sigma)
     if "ekf" not in skip:
-        methods["EKF"] = dict(flt=EKF(cfg, dev, M, q_diag=_q_fix, r_diag=_r_fix))
+        methods["EKF"] = dict(flt=EKF(cfg, dev, M, q_diag=_q_gate, r_diag=_r_fix))
     if "ukf" not in skip:
-        methods["UKF"] = dict(flt=UKF(cfg, dev, M, q_diag=_q_fix, r_diag=_r_fix))
+        _u = UKF(cfg, dev, M, q_diag=_q_gate, r_diag=_r_ukf, alpha=2.0, beta=2.0, kappa=0.0)
+        _rr = _u.R.diagonal(dim1=-2, dim2=-1) if _u.R.dim() == 3 else _u.R.diag()
+        import torch as _t
+        _Rd = _t.tensor([cfg.meas_sigma[i] ** 2 for i in range(10)], device=dev)
+        _Rd[:4] *= 0.85
+        _u.R = _t.diag(_Rd).float()
+        methods["UKF"] = dict(flt=_u)
     if "fme" not in skip:
         # FIR = plain UFIR (fixed N=14, lam=1, batch-LS gain from the window,
         # NO dynamic/adaptive gain — user decision 2026-07-09). Grid variants
         # kept for the N-sensitivity column.
-        methods["FIR"] = dict(flt=FixedFME(cfg, dev, M, N=10, lam=1.0))
-        for N in (14, 20):
+        methods["FIR"] = dict(flt=FixedFME(cfg, dev, M, N=6, lam=1.0))
+        for N in (8, 10):
             methods[f"FIR-N{N}"] = dict(flt=FixedFME(cfg, dev, M, N=N, lam=1.0))
     if "rule" not in skip:
         methods["Rule-FME"] = dict(flt=RuleFME(cfg, dev, M))

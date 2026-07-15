@@ -60,28 +60,7 @@ def _plant_step(s, u, dt, m, J, g_vec, wind_acc, wn):
 
 
 # ─────────────────────────────── reference patterns (position, velocity, yaw)
-def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.575):
-    # w 0.675 -> 0.575 (2026-07-14, 1.15x of the original 0.50). At 1.35x the
-    # persistent drag transients made SHORT effective memory causally optimal
-    # even in nominal flight (five independent SAC runs converged to N~5,
-    # lam~0.78, incl. one STARTED at N=16/lam=0.99), so the adaptive method
-    # had no realisable headroom over fixed N=6. 1.15x restores the regime
-    # where nominal favours long memory while disturbances force short --
-    # the contrast AFME exists to exploit. Accepted trade-off (user call):
-    # the nominal EKF/UKF ordering may return to a statistical tie.
-    # Centripetal demand a_h = R0*w^2 = 1.37 m/s^2 -> commanded bank ~7.9 deg.
-    # MEASURED at 1.2x (gate v8): the heavier payload vehicle still sagged to
-    # ~2.3 deg inside the window, so 1.2x was not enough for an x,y signature;
-    # 1.35x pushes the commanded bank ~26% higher while cruise speed stays a
-    # modest 2.0 m/s -- an agile but plausible indoor flight.
-    # WHY THIS MATTERS: a payload mass error acts ALONG THE THRUST AXIS, so it
-    # only reaches x,y through the tilt: a_xy = |dT/m| * sin(theta). Measured
-    # |dT/m| = 5.18 m/s^2. In the measured payload window the vehicle banked
-    # only 1-2 deg (a heavier vehicle tracks the reference more sluggishly and
-    # banks LESS), so the horizontal share was ~0.12 m/s^2 -- BELOW the
-    # 0.18 m/s^2 nominal residual. That is the whole reason the payload looked
-    # like a pure z-axis disturbance. At 6.3 deg the share is 0.57 m/s^2,
-    # ~3x the residual, and the payload shows up on all three axes.
+def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.29):
     if pattern == "hover":
         return c, np.zeros(3), 0.0
     if pattern == "circle":
@@ -269,7 +248,7 @@ def generate_dataset(cfg: Config, out_root=None, n_train=None, n_heldout=None,
         d = os.path.join(out_root, split)
         os.makedirs(d, exist_ok=True)
         for i in range(n):
-            sc = sample_scenario(cfg, rng, heldout=ho, train_idx=(None if ho else i))
+            sc = sample_scenario(cfg, rng, heldout=ho)
             arrs = generate_traj(cfg, sc, np.random.default_rng(sc["seed"]))
             np.savez_compressed(os.path.join(d, f"traj_{i:04d}.npz"),
                                 **{k: v.astype(np.float32) for k, v in arrs.items()})

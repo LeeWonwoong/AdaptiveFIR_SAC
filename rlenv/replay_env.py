@@ -138,8 +138,19 @@ class VectorReplayEnv:
             nr = self.n_rng
             g_uwb = r[:, 0:nr].norm(dim=1, keepdim=True) / (nr ** 0.5)
             g_att = r[:, nr:nr + 3].norm(dim=1, keepdim=True) / (3.0 ** 0.5)
-            g_gyr = r[:, nr + 3:nr + 6].norm(dim=1, keepdim=True) / (3.0 ** 0.5)
-            head = torch.cat([g_uwb, g_att, g_gyr], dim=1)            # [M,3]
+            if getattr(self.cfg, "obs_drop_gyro", False):
+                # GYRO DROPPED from the observation (2026-07-15). The gyro
+                # innovation carries almost no disturbance information (mean
+                # Cohen's d ~0.4 vs UWB ~1.9 across all patterns/scenarios):
+                # it measures angular RATE, whereas wind/payload induce a
+                # low-frequency attitude BIAS that differentiation misses,
+                # while amplifying manoeuvre noise. The WFME still USES the
+                # gyro measurement for state estimation; it is removed only
+                # from the policy observation.
+                head = torch.cat([g_uwb, g_att], dim=1)              # [M,2]
+            else:
+                g_gyr = r[:, nr + 3:nr + 6].norm(dim=1, keepdim=True) / (3.0 ** 0.5)
+                head = torch.cat([g_uwb, g_att, g_gyr], dim=1)       # [M,3]
             # normalize by the Isaac-measured CALM-FLIGHT innovation level, so
             # mu reads as a multiple of nominal (1 = calm, 2-4 = disturbance).
             head = head / self.grp_scale
