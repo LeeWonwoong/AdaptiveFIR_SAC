@@ -127,7 +127,7 @@ def _cm_gain(t, dyn_intervals, ramp=0.4):
     return 0.0
 
 
-def _cm_ref(t, gain, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=1.0):
+def _cm_ref(t, gain, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.29):
     """calm = hover at c; dynamic = fast figure-8 + altitude bob, amplitude
     scaled by `gain` → attitude activity turns on/off with the regime."""
     osc = np.array([R0 * np.sin(w * t), 0.5 * R0 * np.sin(2 * w * t),

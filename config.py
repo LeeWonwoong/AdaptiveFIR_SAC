@@ -84,11 +84,11 @@ class Config:
     # ══════════════════════════════════════════════════════════
     #  Weighted FME (filter)
     # ══════════════════════════════════════════════════════════
-    N_min: int = 4                      # observability rank-12 reached at N=2 (UWB+IMU); 4 for noise-reduction margin
+    N_min: int = 6                      # observability rank-12 reached at N=2 (UWB+IMU); 4 for noise-reduction margin
     N_max: int = 20                     # ring-buffer length W (fixed shape). At the
                                         # CALIBRATED process noise q0 the nominal N_opt≈14
                                         # (DI-FME choice) sits mid-range → real headroom.
-    lam_min: float = 0.7
+    lam_min: float = 0.75
     # IFIABLE -- (N=5,lam=0.8), (N=4,lam=1), (N=7,lam=0.7) give nearly the same
     # effective memory, so the Q-landscape has a ridge along constant-memory
     # contours and SAC parks lambda at an arbitrary low value (measured 0.72-
@@ -165,9 +165,9 @@ class Config:
                                         # (user-selected option 3; groups let SAC tell
                                         #  "UWB trouble (dropout/NLoS)" from "IMU trouble").
                                         # False → legacy per-channel residual vector.
-    n_obs_groups: int = 2               # UWB / attitude  (gyro dropped)
-    obs_drop_gyro: bool = True          # exclude gyro group from observation
-    obs_group_scale: tuple = (1.13, 1.7, 14.32)
+    n_obs_groups: int = 3               # UWB / attitude  (gyro dropped)
+    obs_drop_gyro: bool = False          # exclude gyro group from observation
+    obs_group_scale: tuple = (1.14, 1.74, 14.32)
     # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9e (0.8x, w=0.4, IMU att 0.01 / gyr 0.005) nominal heldout
     #   (WFME N=6 innovations, whitened group norms over 6-48 s, 3 patterns,
     #   MEDIAN estimator -- the typical calm level. RMS/mean is rejected: the
@@ -431,8 +431,8 @@ class Config:
     # in BOTH gate v7 and gate v8 -- it was crashing, and we mislabelled it as a
     # dropped trajectory. 12-16 keeps a >= 6 deg margin to the clamp while still
     # producing the sustained model error the finite-memory structure needs.
-    ambient_turb_std: float = 1.0
-    ambient_turb_std_range: tuple = (1.0, 1.0)
+    ambient_turb_std: float = 0.5
+    ambient_turb_std_range: tuple = (0.5, 0.5)
     # LIGHT AMBIENT WIND, drawn per trajectory (2026-07-13). Measured effect:
     #   1.4-2.0 m/s -> NO effect (drag ~ v^2 puts the model error BELOW the
     #                  existing nominal residual of 0.2-0.6 m/s^2; verified on
@@ -580,21 +580,21 @@ class Config:
         # path, so the entry/recovery transients are the most legible.
         #
         # (type, p_lo, p_hi, windows, extra{turb, com, pattern})
-        ("nominal", 0, 0, (), {"turb": 1.0, "pattern": "helical"}),        # 0
-        ("nominal", 0, 0, (), {"turb": 1.0, "pattern": "figure8"}),        # 1
-        ("nominal", 0, 0, (), {"turb": 1.0, "pattern": "waypoint"}),       # 2
+        ("nominal", 0, 0, (), {"turb": 0.5, "pattern": "helical"}),        # 0
+        ("nominal", 0, 0, (), {"turb": 0.5, "pattern": "figure8"}),        # 1
+        ("nominal", 0, 0, (), {"turb": 0.5, "pattern": "waypoint"}),       # 2
         ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 3
-         {"turb": 1.0, "pattern": "helical"}),
+         {"turb": 0.5, "pattern": "helical"}),
         ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 4  FIG
-         {"turb": 1.0, "pattern": "figure8"}),
+         {"turb": 0.5, "pattern": "figure8"}),
         ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 5
-         {"turb": 1.0, "pattern": "waypoint"}),
+         {"turb": 0.5, "pattern": "waypoint"}),
         ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 6
-         {"turb": 1.0, "com": 0.04, "pattern": "helical"}),
+         {"turb": 0.5, "com": 0.04, "pattern": "helical"}),
         ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 7  FIG
-         {"turb": 1.0, "com": 0.04, "pattern": "figure8"}),
+         {"turb": 0.5, "com": 0.04, "pattern": "figure8"}),
         ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 8
-         {"turb": 1.0, "com": 0.04, "pattern": "waypoint"}),
+         {"turb": 0.5, "com": 0.04, "pattern": "waypoint"}),
     )
     heldout_gust_speed_range: tuple = (14.0, 17.0)   # was (20,24): tilt-clamp crash
     heldout_nlos_bias_range: tuple = (0.5, 0.7)  # stronger NLoS bias (still < gate)

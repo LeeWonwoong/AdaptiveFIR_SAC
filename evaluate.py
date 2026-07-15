@@ -75,7 +75,7 @@ class Runner:
         feat = (cfg.n_obs_groups + 2) if cfg.obs_channel_norms \
             else (cfg.meas_dim + 2)
         stack = torch.zeros(M, cfg.L_obs, feat, device=self.dev)   # [M,L,feat]
-        grp_scale = torch.tensor(cfg.obs_group_scale,
+        grp_scale = torch.tensor(cfg.obs_group_scale[:cfg.n_obs_groups],
                                  device=self.dev).view(1, -1)
         defN = torch.full((M,), float(cfg.N_default), device=self.dev)
         defL = torch.full((M,), float(cfg.lam_default), device=self.dev)
@@ -92,10 +92,11 @@ class Runner:
             r = torch.nan_to_num(nu / self.meas_sig, nan=0.0)
             if cfg.obs_channel_norms:
                 nr = len(cfg.anchors)
-                g = torch.cat([r[:, 0:nr].norm(dim=1, keepdim=True) / nr ** 0.5,
-                               r[:, nr:nr+3].norm(dim=1, keepdim=True) / 3 ** 0.5,
-                               r[:, nr+3:nr+6].norm(dim=1, keepdim=True) / 3 ** 0.5],
-                              dim=1)
+                cols = [r[:, 0:nr].norm(dim=1, keepdim=True) / nr ** 0.5,
+                        r[:, nr:nr+3].norm(dim=1, keepdim=True) / 3 ** 0.5]
+                if not getattr(cfg, "obs_drop_gyro", False):
+                    cols.append(r[:, nr+3:nr+6].norm(dim=1, keepdim=True) / 3 ** 0.5)
+                g = torch.cat(cols, dim=1)
                 head = (g / grp_scale).clamp(max=cfg.resid_clip)
             else:
                 head = r.clamp(-cfg.resid_clip, cfg.resid_clip)
@@ -202,7 +203,7 @@ def main():
     torch.manual_seed(cfg.seed)
     ds = TrajDataset(cfg, "heldout", dev)
     M = ds.n
-    run = Runner(cfg, ds, dev)
+    run = Runner(cfg, ds, dev, noise_seed=1234 + int(cfg.seed) * 101)
     skip = set(s.strip() for s in a.skip.split(",") if s.strip())
     ev_dir = os.path.join(cfg.outdir, "eval")
     os.makedirs(ev_dir, exist_ok=True)
