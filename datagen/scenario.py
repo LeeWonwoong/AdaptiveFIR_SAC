@@ -165,6 +165,26 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
 
     if stype == "mass_step":
         sc["mass"] = _mass()
+        # PAYLOAD + WIND GUST (2026-07-16): the payload scenario now also injects
+        # a sustained wind gust over the SAME window as the mass pickup. Rationale
+        # (verified): with IMU attitude fusion a pure mass change is a near-pure
+        # z-axis disturbance (the thrust-axis mass error only reaches x,y through
+        # sin(bank) ~ 5% at cruise), so payload x,y localization error stayed at
+        # the nominal floor. A coincident horizontal wind gust adds a genuine
+        # x,y model error (aerodynamic drag the filter does not model), so the
+        # payload window now perturbs ALL THREE axes. Physically: a delivery
+        # drone picking up a payload in an open area is simultaneously hit by a
+        # gust. Reported in the paper simply as the "payload" scenario.
+        _pw = getattr(cfg, "payload_wind_speed", 0.0)
+        if _pw and _pw > 0.0 and sc["mass"]:
+            _mm = sc["mass"]
+            _vr = getattr(cfg, "wind_vertical_ratio", None)
+            _vert = float(rng.uniform(*_vr)) if _vr else 0.0
+            sc["sustained"] = {"speed": float(_pw),
+                               "vert_ratio": _vert,
+                               "dir_rad": float(rng.uniform(0, 2 * np.pi)),
+                               "start_s": float(_mm["onset_s"]),
+                               "duration_s": float(_mm["duration_s"])}
     elif stype == "gust":
         sc["gusts"] = _gusts()
     elif stype == "sustained_wind":
@@ -234,7 +254,10 @@ def disturbance_intervals(sc: dict):
         out.append((_m["onset_s"], _end, "mass_step"))
     for g in sc.get("gusts", []):
         out.append((g["start_s"], g["start_s"] + g["duration_s"], "gust"))
-    if sc.get("sustained"):
+    # The payload scenario's coincident wind (sc["mass"] present) shares the mass
+    # window, already emitted above — do NOT double-shade it as a separate wind
+    # interval. Only pure sustained_wind scenarios (no mass) emit wind intervals.
+    if sc.get("sustained") and not sc.get("mass"):
         su = sc["sustained"]
         _sl = su if isinstance(su, list) else [su]     # 1-or-N windows
         for _w in _sl:

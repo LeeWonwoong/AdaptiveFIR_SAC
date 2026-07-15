@@ -414,6 +414,14 @@ class Config:
     # x,y model error, and the inertia tensor grows with the added mass.
     mass_impulse_z: tuple = (0.6, 1.2)         # downward velocity impulse [m/s] at coupling
     mass_impulse_xy: tuple = (0.3, 0.7)        # lateral velocity impulse [m/s]
+    payload_wind_speed: float = 7.0            # [m/s] coincident wind gust over the
+    # payload window (2026-07-16). 0 disables. Injected by sample_scenario when a
+    # mass_step is drawn, spanning the SAME window as the mass pickup, so the
+    # payload scenario perturbs x,y (aerodynamic drag) in addition to z (mass
+    # error). 7 m/s puts the horizontal drag model error ~0.3-0.4 m/s^2, above
+    # the nominal residual, so payload x,y localization error clears nominal on
+    # every axis. Applied identically in Isaac (WindModel apply_forces) and synth.
+    # Reported in the paper simply as the "payload" scenario (mass pickup).
     # gust: SHARP impulsive gusts (FM-SMC abrupt disturbance), not slow ramps
     gust_speed_range: tuple = (12.0, 16.0)           # same tilt-clamp ceiling     # m/s — <15 m/s shifts N* the WRONG way
                                                # (measured: 10 m/s → N*=20, 12 m/s → ±2 ambiguous;

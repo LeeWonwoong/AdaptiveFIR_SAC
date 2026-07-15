@@ -50,14 +50,11 @@ def _Weul(eta):
                      [0, sp * sec, cp * sec]])
 
 
-def _plant_step(s, u, dt, m, J, g_vec, wind_acc, wn, tau_extra=0.0):
-    """J is the TRUE inertia (payload window scales it); tau_extra is a
-    parasitic body torque (payload CoM offset x thrust) — mirrors the Isaac
-    datagen payload injection (run_datagen._set_mass: set_coms/set_inertias)."""
+def _plant_step(s, u, dt, m, J, g_vec, wind_acc, wn):
     p, v, eta, om = s[0:3], s[3:6], s[6:9], s[9:12]
     R = _R(eta)
     acc = g_vec + R @ np.array([0, 0, u[0]]) / m + wind_acc + wn[:3]
-    om_dot = (u[1:4] + tau_extra - np.cross(om, J * om)) / J + wn[3:6]
+    om_dot = (u[1:4] - np.cross(om, J * om)) / J + wn[3:6]
     return np.concatenate([p + v * dt, v + acc * dt,
                            eta + (_Weul(eta) @ om) * dt, om + om_dot * dt])
 
@@ -147,28 +144,14 @@ def _controller(s, p_ref, v_ref, yaw_ref, m_nom, J, g):
     p, v, eta, om = s[0:3], s[3:6], s[6:9], s[9:12]
     kp, kd = 4.0, 3.2
     a_des = kp * (p_ref - p) + kd * (v_ref - v)
-    # ±10 (was ±6, 2026-07-15): thrust headroom. The TRAIN payload range goes to
-    # +90%, where hover needs m_nom*1.9*g = 25.6 N but m_nom*(6+g) = 21.7 N — the
-    # old clip made the heavy vehicle UNABLE to hover (unbounded z sink; measured
-    # 64 m dev at delta=0.9). ±12: T_max = m_nom*(12+g) = 29.9 N ≈ 2.2x hover — a
-    # normal quad thrust ratio. ±10 was NOT enough: the 0.7 rad tilt authority
-    # costs vertical thrust (T·cos tilt) during the payload CoM transient and
-    # the 10−8.83 margin sank the delta=0.9 runs (z dev 12 m). Nominal behavior
-    # UNCHANGED (verified: identical dev at clip 6 vs 12; bank never near clip).
-    a_des = np.clip(a_des, -12, 12)
+    a_des = np.clip(a_des, -6, 6)
     f_w = m_nom * (a_des + np.array([0, 0, g]))                 # desired world force
     fz = max(f_w[2], 0.2 * m_nom * g)
     T = np.linalg.norm(f_w)
     cy, sy = np.cos(yaw_ref), np.sin(yaw_ref)
     # small-angle attitude from desired lateral force
-    # ±0.7 rad (was ±0.45, 2026-07-15): holding station in the 15 m/s wind
-    # scenario needs 5.1 m/s^2 of lateral drag rejection = 0.48 rad of tilt —
-    # ABOVE the old clip, so the synth vehicle was structurally UNABLE to hold
-    # position in wind (measured 615 m drift). PX4's MPC_TILTMAX_AIR is 45 deg
-    # (0.79 rad); 0.7 rad matches that authority with margin, and nominal
-    # flight (bank ~0.2 rad) never touches either clip.
-    th_des = np.clip((cy * f_w[0] + sy * f_w[1]) / fz, -0.7, 0.7)
-    ph_des = np.clip((sy * f_w[0] - cy * f_w[1]) / fz, -0.7, 0.7)
+    th_des = np.clip((cy * f_w[0] + sy * f_w[1]) / fz, -0.45, 0.45)
+    ph_des = np.clip((sy * f_w[0] - cy * f_w[1]) / fz, -0.45, 0.45)
     eta_des = np.array([ph_des, th_des, yaw_ref])
     e = eta_des - eta
     e[2] = (e[2] + np.pi) % (2 * np.pi) - np.pi
@@ -202,36 +185,25 @@ def generate_traj(cfg: Config, scenario: dict, rng: np.random.Generator):
     wv = np.zeros((T, 3))
 
     mass_onset_k = None
-    mass_end_s = None
-    com_body = np.zeros(3)
     if scenario.get("mass"):
-        _mm = scenario["mass"]
-        mass_onset_k = int(_mm["onset_s"] / dt)
-        # WINDOWED payload (bug fix 2026-07-15): the old `t >= onset` check
-        # kept the payload attached to the END of the trajectory, while the
-        # Isaac datagen RELEASES it at onset+duration — synth now matches.
-        mass_end_s = _mm["onset_s"] + _mm.get("duration_s", 1e9)
-        # payload CoM offset in the body xy-plane (ISAAC PARITY 2026-07-15):
-        # run_datagen applies set_coms/set_inertias on pickup; synth previously
-        # changed ONLY the scalar mass, so the payload was a pure z-axis
-        # disturbance here (no x,y model error — the non-physical
-        # payload-x,y < nominal-x,y table artifact). The offset CoM makes the
-        # thrust vector miss the CoM: tau = r x [0,0,T] = [r_y T, -r_x T, 0].
-        _off, _dir = float(_mm.get("com_offset", 0.0)), float(_mm.get("com_dir", 0.0))
-        com_body = np.array([_off * np.cos(_dir), _off * np.sin(_dir), 0.0])
+        mass_onset_k = int(scenario["mass"]["onset_s"] / dt)
     cm_dyn = [(seg["start_s"], seg["start_s"] + seg["duration_s"])
               for seg in scenario.get("cm_regime", []) if seg.get("mode") == "dynamic"]
     is_cm = scenario.get("type") == "tag_commonmode"
-    tau_bias_hat = np.zeros(3)      # PX4 rate-integrator bias-rejection state
 
     for k in range(T):
         t = k * dt
-        m_true, J_true, in_mass = m_nom, J, False
-        if scenario.get("mass") and scenario["mass"]["onset_s"] <= t <= mass_end_s:
-            in_mass = True
-            m_true = m_nom * (1.0 + scenario["mass"]["delta"])
-            # inertia grows with the added mass (Isaac: set_inertias x(1+delta))
-            J_true = J * (1.0 + scenario["mass"]["delta"])
+        m_true = m_nom
+        if scenario.get("mass"):
+            _mm = scenario["mass"]
+            # WINDOWED payload (bug fix): release the mass at onset+duration, as
+            # the Isaac datagen does (run_datagen RELEASES via set_masses). The
+            # old `t >= onset` kept the payload attached to the end of the traj,
+            # so the post-window recovery the finite-memory structure is meant to
+            # exploit never happened in synth.
+            _end = _mm["onset_s"] + _mm.get("duration_s", 1e9)
+            if _mm["onset_s"] <= t <= _end:
+                m_true = m_nom * (1.0 + _mm["delta"])
         w_vel, w_force = wind.get(t, dt)
         wind_acc = w_force / m_true
 
@@ -259,33 +231,13 @@ def generate_traj(cfg: Config, scenario: dict, rng: np.random.Generator):
             s[3] += mm.get("impulse_xy", 0.0) * np.cos(ang)       # lateral x
             s[4] += mm.get("impulse_xy", 0.0) * np.sin(ang)       # lateral y
 
-        # parasitic torque from the offset payload CoM (body frame): the
-        # thrust [0,0,T] no longer passes through the CoM. This is what puts
-        # REAL model error on x,y, so payload x,y error > nominal x,y — the
-        # physical table. PX4-PARITY (2026-07-15): the real vehicle's rate
-        # loop has an INTEGRATOR (MC_xxxRATE_I) that rejects a constant bias
-        # torque within seconds; the synth PD controller has none (adding one
-        # in-loop destabilized/degraded tracking — measured). We therefore
-        # model the integrator EXPLICITLY as a first-order bias estimate
-        # (T_I = 0.3 s) subtracted from the disturbance: full torque hits at
-        # pickup (transient), decays to a residual (thrust
-        # modulation the estimate lags behind), and UNWINDS over ~2 s at
-        # release. T_I=0.3 s (swept 0.1-2 s: >=0.5 s lets the pickup transient
-        # outrun the PD loop -> divergence; 0.3 s is bounded, max dev 2.6 m,
-        # payload x,y dev ~6x nominal). Zero effect outside the window.
-        tau_com = np.array([com_body[1] * u[0], -com_body[0] * u[0], 0.0]) \
-            if in_mass else np.zeros(3)
-        tau_bias_hat += (dt / 0.3) * (tau_com - tau_bias_hat)      # T_I = 0.3 s
-        tau_net = tau_com - tau_bias_hat
-
         # log BEFORE stepping: (gt_k, u_k) with u_k acting k -> k+1
         t_arr[k], u_arr[k], gt[k], mt[k], wv[k] = t, u, s, m_true, w_vel
 
         for _ in range(sub):
             wn = np.concatenate([rng.normal(0, acc_std, 3),
                                  rng.normal(0, gyro_std, 3)])
-            s = _plant_step(s, u, dti, m_true, J_true, g_vec, wind_acc, wn,
-                            tau_extra=tau_net)
+            s = _plant_step(s, u, dti, m_true, J, g_vec, wind_acc, wn)
         s[6:8] = np.clip(s[6:8], -1.1, 1.1)
 
     return dict(t=t_arr, u=u_arr, gt=gt, m_true=mt, wind=wv)
@@ -304,11 +256,10 @@ def generate_dataset(cfg: Config, out_root=None, n_train=None, n_heldout=None,
         d = os.path.join(out_root, split)
         os.makedirs(d, exist_ok=True)
         for i in range(n):
-            # BUG FIX (2026-07-15): heldout_idx / train_idx were NOT passed, so
-            # the synth heldout split IGNORED cfg.heldout_plan (random draw
-            # instead of the deterministic 3x3 paper set) and the train split
-            # skipped the pattern round-robin quota. The Isaac commander
-            # passes both — synth now matches.
+            # heldout_idx / train_idx MUST be passed (bug fix): otherwise the
+            # heldout split ignores cfg.heldout_plan (random draw instead of the
+            # deterministic 3x3 paper set) and the train split skips the pattern
+            # round-robin quota. The Isaac commander passes both — synth matches.
             sc = sample_scenario(cfg, rng, heldout=ho,
                                  heldout_idx=(i if ho else None),
                                  train_idx=(None if ho else i))
