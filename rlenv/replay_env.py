@@ -37,8 +37,11 @@ class VectorReplayEnv:
             assert cfg.meas_dim == self.n_rng + 6, \
                 "channel-norm obs assumes z = [UWB x4 | attitude x3 | gyro x3]"
             self.feat = cfg.n_obs_groups + 2              # [g_uwb,g_att,g_gyr,N,lam]
+            # obs_group_scale may carry 3 entries (UWB, att, gyro) for backward
+            # compat; when the gyro group is dropped we only keep the first
+            # n_obs_groups so the width matches the 2-channel head.
             self.grp_scale = torch.tensor(
-                cfg.obs_group_scale, device=device).view(1, -1)
+                cfg.obs_group_scale[:cfg.n_obs_groups], device=device).view(1, -1)
         else:
             self.feat = cfg.meas_dim + 2                  # legacy per-channel width
         self.fme = WeightedFME(cfg, device, self.M)
