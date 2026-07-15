@@ -165,7 +165,7 @@ class Config:
                                         # (user-selected option 3; groups let SAC tell
                                         #  "UWB trouble (dropout/NLoS)" from "IMU trouble").
                                         # False → legacy per-channel residual vector.
-    n_obs_groups: int = 3               # UWB / attitude  (gyro dropped)
+    n_obs_groups: int = 3               # UWB / attitude / gyro (3 groups, v9f_B-validated)
     obs_drop_gyro: bool = False          # exclude gyro group from observation
     obs_group_scale: tuple = (1.14, 1.74, 14.32)
     # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9e (0.8x, w=0.4, IMU att 0.01 / gyr 0.005) nominal heldout
@@ -230,8 +230,11 @@ class Config:
                                         # compressed into [0.95,1.0], invisible to SAC.
                                         # 4 sigma keeps nominal ~0.92 and lets disturbance
                                         # reach ~2 with headroom.
-    episode_len: int = 150              # RL steps per segment (shorter -> higher disturbance
-                                        # density + more episodes before alpha settles)
+    episode_len: int = 250              # RL steps per segment. v10 (user-approved,
+                                        # 2026-07-15): 150 -> 250 so a segment contains the
+                                        # full disturbance window PLUS the recovery tail —
+                                        # the return then credits fast post-window recovery.
+                                        # Fits: seg=(20+250+1)*5=1355 < T=2500 (50 s @50 Hz).
     warmup_steps: int = 20              # aux-EKF-only phase in EPOCHS. Set to N_max so that,
                                         # by the first SAC action, filled_valid == N_max and ANY
                                         # N in [N_min, N_max] is fully available (no growing-window
@@ -364,9 +367,13 @@ class Config:
     #    anchor_dropout / nlos_burst EXCLUDED from the default mix (IMU fusion
     #    bridges 1-anchor loss → no N* shift; 2-anchor loss = collapse, not
     #    adaptation). Sampler branches remain available for ablations.
-    scenario_types: tuple = ("nominal", "mass_step",
-                             "sustained_wind", "turbulence_burst")
-    scenario_probs: tuple = (0.15, 0.40, 0.25, 0.20)
+    # v10 (2026-07-15, user decision): TRAIN = HELD-OUT = the same THREE
+    # scenario types. turbulence_burst REMOVED from the mix (heldout was
+    # always 3 types; train now matches, so the policy is never trained on a
+    # disturbance class the paper does not evaluate). Its probability mass is
+    # redistributed to the two disturbance classes.
+    scenario_types: tuple = ("nominal", "mass_step", "sustained_wind")
+    scenario_probs: tuple = (0.15, 0.45, 0.40)
     # flight patterns (NO 'aggressive': high-G maneuvers break the 1st-order
     # Taylor linearization the FIR relies on — out of scope by design).
     flight_patterns: tuple = ("helical", "figure8", "waypoint")
