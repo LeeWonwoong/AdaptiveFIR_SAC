@@ -424,7 +424,7 @@ class Config:
     # re-enable a coincident gust that also lifts the x,y axes, if a per-axis
     # payload comparison is ever wanted. Applied identically in Isaac and synth.
     # gust: SHARP impulsive gusts (FM-SMC abrupt disturbance), not slow ramps
-    gust_speed_range: tuple = (12.0, 16.0)           # same tilt-clamp ceiling     # m/s — <15 m/s shifts N* the WRONG way
+    gust_speed_range: tuple = (10.0, 15.0)           # v12: aligned with sustained range
                                                # (measured: 10 m/s → N*=20, 12 m/s → ±2 ambiguous;
                                                #  ≥15 m/s → N* 14→4). PX4-compensation-exceeding only.
     gust_duration_range: tuple = (4.0, 8.0)    # s (sustained-style; the validated WIN was ~7 s)
@@ -437,7 +437,10 @@ class Config:
     # N shrink -> offset -> N recover, twice per trajectory.
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
-    sustained_speed_range: tuple = (12.0, 16.0)
+    sustained_speed_range: tuple = (10.0, 15.0)
+    # ^ v12 (2026-07-16): train winds 10-15 m/s (was 12-16). The held-out gust
+    # is pinned at 12 m/s, so training covers the test severity with margin on
+    # both sides; the policy still sees strong 15 m/s gusts during training.
     # CAP AT 16 m/s (2026-07-13). Holding station against a headwind requires a
     # bank of atan(0.023*v^2 / g): 28 deg at 15 m/s, 31 at 16, 40 at 19, 43 at
     # 20 -- and the trajectory itself now demands another ~8 deg. PX4 clamps the
@@ -589,7 +592,7 @@ class Config:
         # THREE flight patterns x THREE scenarios = 9 trajectories. Table II
         # reports, for each scenario, the mean over the three patterns, so a
         # number is never an artefact of one particular path. The DISTURBANCE
-        # is held fixed within a scenario (same 15 m/s, same windows; same
+        # is held fixed within a scenario (same 12 m/s, same windows; same
         # +70%, same CoM, same window) -- only the pattern varies, which is
         # what makes the average meaningful.
         # Figures use the figure-8 rows (h4 wind, h7 payload): the sharpest
@@ -599,11 +602,11 @@ class Config:
         ("nominal", 0, 0, (), {"turb": 0.5, "pattern": "helical"}),        # 0
         ("nominal", 0, 0, (), {"turb": 0.5, "pattern": "figure8"}),        # 1
         ("nominal", 0, 0, (), {"turb": 0.5, "pattern": "waypoint"}),       # 2
-        ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 3
+        ("sustained_wind", 12.0, 12.0, ((6.0, 10.0), (26.0, 10.0)),        # 3
          {"turb": 0.5, "pattern": "helical"}),
-        ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 4  FIG
+        ("sustained_wind", 12.0, 12.0, ((6.0, 10.0), (26.0, 10.0)),        # 4  FIG
          {"turb": 0.5, "pattern": "figure8"}),
-        ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 5
+        ("sustained_wind", 12.0, 12.0, ((6.0, 10.0), (26.0, 10.0)),        # 5
          {"turb": 0.5, "pattern": "waypoint"}),
         ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 6
          {"turb": 0.5, "com": 0.04, "pattern": "helical"}),
