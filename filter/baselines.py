@@ -194,6 +194,11 @@ class FixedFME(WeightedFME):
         super().__init__(cfg, device, M)
         self.N_fix = torch.full((M,), float(N if N else cfg.N_default), device=device)
         self.l_fix = torch.full((M,), float(lam if lam else cfg.lam_default), device=device)
+        # expose the ACTUAL fixed choice so the evaluator logs the real N, not
+        # the default probe N (Runner reads flt.last_N; without this a FixedFME
+        # with N=6 was reported as mean_N=14 in the summary table).
+        self.last_N = self.N_fix
+        self.last_lam = self.l_fix
 
     def step(self, u_prev, z, *_):
         return super().step(u_prev, z, self.N_fix, self.l_fix)
