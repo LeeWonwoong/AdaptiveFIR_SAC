@@ -168,7 +168,17 @@ def generate_traj(cfg: Config, scenario: dict, rng: np.random.Generator):
     T = int(scenario["duration_s"] / dt)
     J = np.array([cfg.Ixx, cfg.Iyy, cfg.Izz])
     g_vec = np.array([0, 0, -cfg.g])
-    wind = WindModel(scenario, seed=scenario["seed"])
+    # ambient breeze must be present in EVERY scenario (nominal / payload / wind),
+    # including the calm segments of the disturbance scenarios. The Isaac path
+    # (run_datagen) passes turb_intensity=ambient_turb_std; synth previously did
+    # NOT, so synth trajectories had a dead-calm background (turb_intensity
+    # defaults to 0) — a mismatch with Isaac. Read the planned/logged ambient
+    # from the scenario when present, else the config default.
+    _amb = float(scenario.get("ambient_turb_std",
+                              getattr(cfg, "ambient_turb_std", 0.0)))
+    wind = WindModel(scenario, seed=scenario["seed"],
+                     turb_intensity=_amb,
+                     turb_bw=getattr(cfg, "ambient_turb_bw", 2.0))
 
     if scenario.get("type") == "tag_commonmode":
         p0 = np.array([5.0, 5.0, 1.5])                       # calm hover start

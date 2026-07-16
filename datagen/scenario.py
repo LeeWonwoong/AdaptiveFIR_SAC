@@ -165,26 +165,15 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
 
     if stype == "mass_step":
         sc["mass"] = _mass()
-        # PAYLOAD + WIND GUST (2026-07-16): the payload scenario now also injects
-        # a sustained wind gust over the SAME window as the mass pickup. Rationale
-        # (verified): with IMU attitude fusion a pure mass change is a near-pure
-        # z-axis disturbance (the thrust-axis mass error only reaches x,y through
-        # sin(bank) ~ 5% at cruise), so payload x,y localization error stayed at
-        # the nominal floor. A coincident horizontal wind gust adds a genuine
-        # x,y model error (aerodynamic drag the filter does not model), so the
-        # payload window now perturbs ALL THREE axes. Physically: a delivery
-        # drone picking up a payload in an open area is simultaneously hit by a
-        # gust. Reported in the paper simply as the "payload" scenario.
-        _pw = getattr(cfg, "payload_wind_speed", 0.0)
-        if _pw and _pw > 0.0 and sc["mass"]:
-            _mm = sc["mass"]
-            _vr = getattr(cfg, "wind_vertical_ratio", None)
-            _vert = float(rng.uniform(*_vr)) if _vr else 0.0
-            sc["sustained"] = {"speed": float(_pw),
-                               "vert_ratio": _vert,
-                               "dir_rad": float(rng.uniform(0, 2 * np.pi)),
-                               "start_s": float(_mm["onset_s"]),
-                               "duration_s": float(_mm["duration_s"])}
+        # PAYLOAD = PURE mass pickup (2026-07-16, option A). No coincident wind.
+        # Rationale: the paper reports 3D position RMSE (not per-axis), and a mass
+        # increase raises the z error enough that payload 3D RMSE clears nominal
+        # on its own (verified: nominal 0.172 -> payload 0.250 m on EKF, z growth
+        # alone). The per-axis "payload x,y < nominal" artifact only appears under
+        # an axis split, which the paper does not do, so no wind is needed to lift
+        # x,y. Keeping payload a pure mass event also keeps it cleanly distinct
+        # from the sustained_wind scenario. (payload_wind_speed left in config but
+        # unused here; set >0 to re-enable the coincident gust if ever wanted.)
     elif stype == "gust":
         sc["gusts"] = _gusts()
     elif stype == "sustained_wind":
