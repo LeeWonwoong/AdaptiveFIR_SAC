@@ -167,21 +167,19 @@ class Config:
                                         # False → legacy per-channel residual vector.
     n_obs_groups: int = 3               # UWB / attitude / gyro (3 groups, v9f_B-validated)
     obs_drop_gyro: bool = False          # exclude gyro group from observation
-    obs_group_scale: tuple = (1.14, 1.74, 14.32)
-    # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9e (0.8x, w=0.4, IMU att 0.01 / gyr 0.005) nominal heldout
-    #   (WFME N=6 innovations, whitened group norms over 6-48 s, 3 patterns,
-    #   MEDIAN estimator -- the typical calm level. RMS/mean is rejected: the
-    #   attitude channel is so heavy-tailed in agile flight (RMS 31 vs median
-    #   1.2) that a mean-based scale would be set by a handful of manoeuvre
-    #   spikes and push the typical level to eps~1e-3, blinding the channel;
-    #   the tail is exactly what the log compression is for). The stale
-    #   values (1.0, 8.0, 12.0) came from the old slow-trajectory system
-    #   and left the attitude/gyro channels at eps=0.02/0.24 in calm v9c
-    #   flight -- compressed to ~0, i.e. the policy was BLIND on the two
-    #   channels that carry the wind/payload signature (measured window
-    #   contrast with corrected sbar: wind eps=(2.5,1.5,6.4), payload
-    #   eps=(1.3,1.8,8.4)). Re-estimate whenever the trajectory regime or
-    #   sensor setup changes.
+    obs_group_scale: tuple = (1.233, 2.500, 19.176)
+    # ^ sbar per group, RE-ESTIMATED 2026-07-16 on v10 (w=0.30, pure payload,
+    #   IMU att 0.01 / gyro 0.005, ambient 0.5) nominal heldout. WFME N=14
+    #   (N_default) whitened group-norm MEDIAN over the 6-48 s eval window, 3
+    #   nominal patterns. att/gyro rose vs the old v9e values (1.14, 1.74, 14.32)
+    #   because the faster w=0.30 cruise raises the attitude/rate innovation
+    #   floor; freezing sbar here keeps the policy's "multiple of nominal" input
+    #   calibrated to THIS dataset (E[eps]~1 in calm flight by construction).
+    #   MEDIAN estimator -- the typical calm level; RMS/mean is rejected because
+    #   the attitude channel is heavy-tailed in agile flight (a handful of
+    #   manoeuvre spikes would push the typical level toward eps~0 and blind the
+    #   channel). Re-estimate whenever the trajectory regime (w), payload
+    #   definition, or sensor setup changes.
                                         # ISAAC-MEASURED nominal whitened-norm levels
                                         # (uwb ~1.1-1.3 | att ~2-16 pattern-dep | gyro
                                         #  ~10-22): IMU innovations are MODEL-error
