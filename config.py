@@ -88,7 +88,12 @@ class Config:
     N_max: int = 20                     # ring-buffer length W (fixed shape). At the
                                         # CALIBRATED process noise q0 the nominal N_opt≈14
                                         # (DI-FME choice) sits mid-range → real headroom.
-    lam_min: float = 0.75
+    lam_min: float = 0.70
+    # ^ v11c (2026-07-16): widened from 0.75 -- in the v10 30k run the policy's
+    # lambda repeatedly touched the 0.75 floor inside disturbance windows
+    # (measured 0.81-0.91 usage band pressed against the clip), i.e. the bound
+    # was binding. 0.70 gives the policy visible headroom so the lambda trace
+    # in the adaptation figure swings freely. Retrain required after changing.
     # IFIABLE -- (N=5,lam=0.8), (N=4,lam=1), (N=7,lam=0.7) give nearly the same
     # effective memory, so the Q-landscape has a ridge along constant-memory
     # contours and SAC parks lambda at an arbitrary low value (measured 0.72-
