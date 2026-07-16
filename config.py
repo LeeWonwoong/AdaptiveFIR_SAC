@@ -172,7 +172,13 @@ class Config:
                                         # False → legacy per-channel residual vector.
     n_obs_groups: int = 3               # UWB / attitude / gyro (3 groups, v9f_B-validated)
     obs_drop_gyro: bool = False          # exclude gyro group from observation
-    obs_group_scale: tuple = (1.233, 2.500, 19.176)
+    obs_group_scale: tuple = (1.192, 2.436, 19.180)
+    # ^ v12 PRECISE re-estimation (2026-07-16): median whitened-innovation norm
+    # per group, computed on the 8 nominal TRAIN trajectories of data_isaac_v12
+    # (held-out set deliberately excluded -- no leakage) x 5 measurement-noise
+    # seeds = 16,760 samples, window 6-48 s, filter at (N_default, lam_default).
+    # IQRs: uwb 0.89-1.55, att 1.75-3.27, gyro 17.8-20.8. Replaces the v10
+    # values (1.233, 2.500, 19.176), which came from 3 held-out trajs x 1 seed.
     # ^ sbar per group, RE-ESTIMATED 2026-07-16 on v10 (w=0.30, pure payload,
     #   IMU att 0.01 / gyro 0.005, ambient 0.5) nominal heldout. WFME N=14
     #   (N_default) whitened group-norm MEDIAN over the 6-48 s eval window, 3
