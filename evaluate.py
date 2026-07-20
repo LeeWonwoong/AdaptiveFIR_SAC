@@ -31,6 +31,10 @@ from filter.wfme import WeightedFME
 from filter.baselines import EKF, UKF, FixedFME, DIFME, RuleFME
 from rl.sac import SACAgent
 from datagen.scenario import disturbance_intervals
+# tools/_common.py is the SINGLE SOURCE OF TRUTH for baseline (EKF/UKF/FME)
+# tuning; import the builders so this online-play run uses exactly the same
+# constants as every tools/ analysis script.
+from tools._common import make_ekf, make_ukf, make_fme
 
 
 # ────────────────────────────────────────────── rollout engine
@@ -163,12 +167,19 @@ def metrics(cfg, ds, errs, Ns, evec=None):
     # skip the growing-window ramp of ALL methods (handover starts at N_min,
     # but fixed-N baselines only reach their full window at N_max epochs)
     W = max(cfg.warmup_steps, cfg.N_max) * max(1, cfg.uwb_stride)
-    out = {"rmse": float(np.sqrt((errs[:, W:] ** 2).mean())),
-           "max_err": float(errs[:, W:].max()),
-           "mean_N": float(Ns[:, W:].mean())}
+    # v12 FINAL: close the window at 40 s so the reported RMSE matches exactly
+    # what the time-series figures show (2-40 s). The window covers both gust
+    # windows (6-16 s, 26-36 s) and the whole payload window (15-33 s) plus the
+    # recovery; the remaining 10 s is undisturbed cruise that only dilutes the
+    # disturbance statistics.
+    W_END = min(int(40.0 / cfg.dt), errs.shape[1])
+    S = slice(W, W_END)
+    out = {"rmse": float(np.sqrt((errs[:, S] ** 2).mean())),
+           "max_err": float(errs[:, S].max()),
+           "mean_N": float(Ns[:, S].mean())}
     if evec is not None:            # per-axis (paper-table convention)
         for j, axn in enumerate("xyz"):
-            out[f"rmse_{axn}"] = float(np.sqrt((evec[:, W:, j] ** 2).mean()))
+            out[f"rmse_{axn}"] = float(np.sqrt((evec[:, S, j] ** 2).mean()))
     # disturbance-window rmse + recovery time
     d_err, rec = [], []
     for i, meta in enumerate(ds.metas):
@@ -209,57 +220,28 @@ def main():
     os.makedirs(ev_dir, exist_ok=True)
 
     methods = {}
-    # FIXED KF statistics (paper rule): R = datasheet sigmas, Q = physical
-    # process noise x kf_q_inflation (=10, unmodeled-dynamics heuristic),
-    # identical constants for every scenario — no per-scenario retuning.
-    _q_fix = list(getattr(cfg, "kf_Q_diag",
-                          (1e-6,) * 3 + (2e-3,) * 3 + (1e-5,) * 3 + (2e-4,) * 3))
-    _r_fix = list(cfg.meas_sigma)
-    # FINAL paper protocol (v11c, 2026-07-16): both KFs use Q = 2e-3 I12.
-    # Rationale for the 2e-3 rollback (was 3e-3): (i) the FME baseline is now
-    # the fixed N=10 window, and for it to sit BELOW the KFs under disturbance
-    # the KF effective memory must be longer, i.e. smaller Q; (ii) measured on
-    # the v10 held-out set, Q=2e-3 makes the two KFs land nominal EXACTLY tied
-    # (EKF 0.165 = UKF 0.165) -- the cleanest "UKF~EKF in near-linear flight"
-    # statement; (iii) disturbance ordering EKF > UKF > FME(N=10) > AFME holds
-    # in every scenario (wind 0.353/0.336/0.313/~0.18). EKF keeps the datasheet
-    # R; the UKF uses the STANDARD alpha=0.5 (0<alpha<=1), beta=2, kappa=0, and
-    # R_uwb x0.85. Identical constants for every scenario -- no per-scenario
-    # retuning.
-    _q_gate = [2e-3] * 12
-    _r_ukf = list(cfg.meas_sigma)
+    # Baseline (EKF/UKF/FME) tuning is defined ONCE in tools/_common.py and
+    # imported via make_ekf / make_ukf / make_fme, so this online-play run and
+    # every tools/ analysis script build the baselines from identical constants.
+    # See tools/_common.py for the grid-search provenance of each value (Q_EKF,
+    # Q_UKF, R_EKF, R_UKF, UKF_ALPHA/BETA/KAPPA, UKF_R_UWB_SCALE, FME_N/LAM).
+    #
+    # NOTE: the make_* builders use the NOMINAL levels. tools/_common also
+    # defines disturbance-regime (*_DIST) levels, but that nominal/disturbance
+    # split is only meaningful for the scenario-separated tools (which run the
+    # KFs twice); this batched online-play run scores all held-out trajectories
+    # together and therefore uses a single (nominal) regime per filter.
     if "ekf" not in skip:
-        methods["EKF"] = dict(flt=EKF(cfg, dev, M, q_diag=_q_gate, r_diag=_r_fix))
+        methods["EKF"] = dict(flt=make_ekf(cfg, dev, M))
     if "ukf" not in skip:
-        # alpha=0.5 (STANDARD range 0<alpha<=1; the old alpha=2 was non-standard
-        # and equivalent to an over-wide sigma-point spread of 6.9 sigma). In the
-        # near-linear low-speed regime alpha in [0.1,1] is essentially identical,
-        # so 0.5 is a canonical choice. R_uwb x0.85 (=0.085) is the real lever:
-        # trusting UWB slightly more gives the UKF its wind/payload edge over the
-        # EKF (-22/-16 mm), while nominal stays within ~3 mm (structural: the
-        # sigma-point advantage vanishes when the dynamics are near-linear).
-        _u = UKF(cfg, dev, M, q_diag=_q_gate, r_diag=_r_ukf, alpha=0.5, beta=2.0, kappa=0.0)
-        _rr = _u.R.diagonal(dim1=-2, dim2=-1) if _u.R.dim() == 3 else _u.R.diag()
-        import torch as _t
-        _Rd = _t.tensor([cfg.meas_sigma[i] ** 2 for i in range(10)], device=dev)
-        _Rd[:4] *= 0.85
-        _u.R = _t.diag(_Rd).float()
-        methods["UKF"] = dict(flt=_u)
+        methods["UKF"] = dict(flt=make_ukf(cfg, dev, M))
     if "fme" not in skip:
-        # FME baseline = plain UFIR, FIXED N=10, lam=1, batch-LS gain from the
-        # window (NO dynamic/adaptive gain). v11c decision: N=10 is the fixed
-        # horizon GRID-TUNED TO BE OPTIMAL IN NOMINAL FLIGHT (nominal grid
-        # optimum sits at N~8-10; N=10 gives 0.147 vs KF 0.165) -- yet even this
-        # nominal-optimal fixed choice degrades sharply under disturbance
-        # (wind 0.147 -> 0.313), because a 1.0 s window keeps averaging over the
-        # pre/post-gust model mismatch. That is exactly the gap AFME closes by
-        # shrinking N online, which is the paper's core claim. At gust onset the
-        # fixed window also shows a flush transient (peak 0.72 > EKF 0.58) that
-        # AFME eliminates -- discussed in the paper, not hidden. The FIR-N6 /
-        # FIR-N14 variants below form the N-sensitivity column.
-        methods["FIR"] = dict(flt=FixedFME(cfg, dev, M, N=10, lam=1.0))
+        # primary fixed-horizon FME baseline, tuned in tools/_common.py
+        # (FME_N, FME_LAM). The FIR-N6 / FIR-N14 variants below form the
+        # N-sensitivity column, holding lambda at the same tuned value.
+        methods["FIR"] = dict(flt=make_fme(cfg, dev, M))
         for N in (6, 14):
-            methods[f"FIR-N{N}"] = dict(flt=FixedFME(cfg, dev, M, N=N, lam=1.0))
+            methods[f"FIR-N{N}"] = dict(flt=make_fme(cfg, dev, M, N=N))
     if "rule" not in skip:
         methods["Rule-FME"] = dict(flt=RuleFME(cfg, dev, M))
     ckpt = a.ckpt or os.path.join(cfg.outdir, "ckpt.pt")

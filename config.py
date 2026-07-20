@@ -59,24 +59,12 @@ class Config:
     ekf_R_sigma: float = 0.10           # practitioner datasheet σ [m] (< true 0.12~0.45)
     ekf_Q_scale: float = 0.40           # practitioner process-σ = ekf_Q_scale * q0 (~q0/2.5)
     # UWB anchors (DI-FME layout scaled to workspace)  [4,3]
-    anchors: tuple = ((1.0, 1.0, 0.0), (9.0, 1.0, 5.0),
-                      (9.0, 9.0, 0.0), (1.0, 9.0, 5.0))
-    # GEOMETRY UPDATE (2026-07-09, measured): anchors pulled IN to 8x8 and the
-    # upper pair raised to z=5 -> steeper elevation angles from the flight band
-    # (z 1~2.6) -> vertical GDOP improves: FIR nominal z 0.145 -> 0.108 (-26%)
-    # at an x,y cost of +0.005. Trajectories (x 1.5~8.4, y 2.7~8.0) remain
-    # inside the anchor hull. Ranges are synthesized OFFLINE from GT + anchors,
-    # so NO Isaac re-run is needed — only retraining on the new measurements.
-    # measurement suite [FROZEN SPEC]: z = 4 UWB ranges ONLY (paper-identical).
-    # The ESTIMATOR internally solves the full 12-state window LS exactly as
-    # DI-FME eq.(8)-(18); the DELIVERABLE (reward/metrics/output claim) is the
-    # position xyz — localization. The weakly observable (v,eta,omega) blocks
-    # of the LS solution are internal byproducts, never delivered and (with
-    # self_anchor=False) never fed back into the linearization.
-    # UWB LoS σ realised at INFME level (R≈0.014 m²; NLoS bursts raise it to
-    # R≈0.2 m² per anchor, INFME-adjacent). This is the FIXED noise statistic
-    # every model-based filter (FME whitening, EKF/UKF R) BELIEVES — it does NOT
-    # know the NLoS σ jump, which is the whole point of [수정C].
+    anchors: tuple = ((1.0, 1.0, 0.0), (9.0, 1.0, 3.0),
+                      (9.0, 9.0, 0.0), (1.0, 9.0, 3.0))
+    # GEOMETRY v13 (2026-07-20): upper pair 5 m -> 3 m for deployability
+    # (UIFM-SLAC field setup: 0/3 m). Flight ceiling 2.5 m (stay below the
+    # anchor plane). Ranges are synthesized from GT + anchors at load time,
+    # so NO Isaac re-run is needed for this change (retrain only).
     meas_sigma: tuple = (0.10, 0.10, 0.10, 0.10,
                          0.01, 0.01, 0.01,
                          0.005, 0.005, 0.005)
@@ -250,7 +238,7 @@ class Config:
                                         # transient, no N clipping) — the SEFFB principle that a
                                         # horizon-N filter is used only once N samples are buffered.
     n_envs: int = 64                    # vectorized log-replay envs
-    uwb_sigma_range: tuple = (0.07, 0.13)   # per-episode LoS σ randomization [m] (brackets 0.10)
+    uwb_sigma_range: tuple = (0.10, 0.10)   # v13: FIXED sigma = 0.10 m == R 0.01 m^2 I4 (UIFM-SLAC Table I)
     # Reward: r = -||p_gt - p_hat||  (pure localization error, L2 distance),
     # with a safety clip only (numerical guard, NOT reward engineering).
     reward_clip: float = 10.0           # clip per-step |cost| at 10 m (protects entropy auto-tuning)
@@ -430,7 +418,7 @@ class Config:
     # re-enable a coincident gust that also lifts the x,y axes, if a per-axis
     # payload comparison is ever wanted. Applied identically in Isaac and synth.
     # gust: SHARP impulsive gusts (FM-SMC abrupt disturbance), not slow ramps
-    gust_speed_range: tuple = (10.0, 15.0)           # v12: aligned with sustained range
+    gust_speed_range: tuple = (9.0, 15.0)            # v13: aligned with sustained range
                                                # (measured: 10 m/s → N*=20, 12 m/s → ±2 ambiguous;
                                                #  ≥15 m/s → N* 14→4). PX4-compensation-exceeding only.
     gust_duration_range: tuple = (4.0, 8.0)    # s (sustained-style; the validated WIN was ~7 s)
@@ -443,7 +431,10 @@ class Config:
     # N shrink -> offset -> N recover, twice per trajectory.
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
-    sustained_speed_range: tuple = (10.0, 15.0)
+    sustained_speed_range: tuple = (9.0, 15.0)
+    # ^ v13: 9-15 so the 12 m/s held-out row sits at the CENTER of the
+    #   training range. Wind is applied PHYSICALLY in Isaac -> regenerate the
+    #   training split before retraining.
     # ^ v12 (2026-07-16): train winds 10-15 m/s (was 12-16). The held-out gust
     # is pinned at 12 m/s, so training covers the test severity with margin on
     # both sides; the policy still sees strong 15 m/s gusts during training.
