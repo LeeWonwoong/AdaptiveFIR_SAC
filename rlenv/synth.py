@@ -60,7 +60,15 @@ def _plant_step(s, u, dt, m, J, g_vec, wind_acc, wn):
 
 
 # ─────────────────────────────── reference patterns (position, velocity, yaw)
-def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.30):
+def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=2.5, w=0.36):
+    # v13 GEOMETRY: R0 3.0 -> 2.5 and w 0.30 -> 0.36 (tangential speed R0*w
+    # unchanged at 0.90 m/s). The commanded path now spans x,y 2.5-7.5, i.e.
+    # 1.5 m of clearance to the 1-9 m anchor square instead of 1.0 m: v12
+    # logged excursions up to 2.1 m of tracking error, which pushed 23 % of
+    # trajectories OUTSIDE the anchor hull (x 0.28-10.07, y 0.12-10.48).
+    # Vertical amplitudes are also reduced because the upper anchors moved
+    # 5 m -> 3 m: the flight band must stay well BELOW the anchor plane or the
+    # four anchors become near-coplanar and z-observability collapses.
     if pattern == "hover":
         return c, np.zeros(3), 0.0
     if pattern == "circle":
@@ -71,8 +79,8 @@ def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.30):
         # figure-8 WITH altitude variation (z-sweep coupled to the lobe) so the
         # non-coplanar anchors get vertical excitation — helps velocity/attitude
         # observability under UWB-only. Planar 8 (z=0) left as "figure8_flat".
-        z = 0.8 * np.sin(w * t)
-        vz = 0.8 * w * np.cos(w * t)
+        z = 0.5 * np.sin(w * t)                          # v13: 0.8 -> 0.5
+        vz = 0.5 * w * np.cos(w * t)
         p = c + np.array([R0 * np.sin(w * t), 0.5 * R0 * np.sin(2 * w * t), z])
         v = np.array([R0 * w * np.cos(w * t), R0 * w * np.cos(2 * w * t), vz])
         return p, v, np.arctan2(v[1], v[0])
@@ -85,8 +93,8 @@ def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.30):
         # centripetal tilt) + sustained vertical motion (activates z-observation
         # against the non-coplanar anchors). Observability of attitude through
         # UWB position measurements stays alive at every instant. PRIMARY.
-        zc = 1.5 + 1.0 * np.sin(0.18 * w * t)           # slow vertical sweep
-        vz = 1.0 * 0.18 * w * np.cos(0.18 * w * t)
+        zc = 1.4 + 0.6 * np.sin(0.18 * w * t)           # v13: 1.5+1.0 -> 1.4+0.6
+        vz = 0.6 * 0.18 * w * np.cos(0.18 * w * t)
         p = c + np.array([R0 * np.cos(w * t), R0 * np.sin(w * t), zc - c[2]])
         v = np.array([-R0 * w * np.sin(w * t), R0 * w * np.cos(w * t), vz])
         return p, v, np.arctan2(v[1], v[0])
@@ -94,14 +102,15 @@ def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.30):
         # inclined figure-8: lateral 8 + coupled altitude oscillation. Frequent
         # heading reversals give rich attitude excitation; the tilted plane
         # keeps z varying against non-coplanar anchors. SECONDARY.
-        z = 0.8 * np.sin(w * t)                          # altitude coupled to lobe
-        vz = 0.8 * w * np.cos(w * t)
+        z = 0.5 * np.sin(w * t)                          # v13: 0.8 -> 0.5
+        vz = 0.5 * w * np.cos(w * t)
         p = c + np.array([R0 * np.sin(w * t), 0.5 * R0 * np.sin(2 * w * t), z])
         v = np.array([R0 * w * np.cos(w * t), R0 * w * np.cos(2 * w * t), vz])
         return p, v, np.arctan2(v[1], v[0])
     if pattern == "waypoint":
-        wps = c + np.array([[-3, -3, 0], [3, -3, 0], [3, 3, 0], [-3, 3, 0]])
-        seg, per = 6.0, 24.0
+        wps = c + np.array([[-2.5, -2.5, 0], [2.5, -2.5, 0],
+                            [2.5, 2.5, 0], [-2.5, 2.5, 0]])   # v13: ±3 -> ±2.5
+        seg, per = 5.0, 20.0                                  # 5 m / 5 s = 1.0 m/s
         tm = t % per
         i = int(tm // seg)
         f = (tm % seg) / seg
@@ -110,7 +119,7 @@ def _ref(pattern, t, c=np.array([5.0, 5.0, 1.5]), R0=3.0, w=0.30):
     # aggressive: fast fig-8 + altitude bob
     wa = 1.1
     p = c + np.array([R0 * np.sin(wa * t), 0.5 * R0 * np.sin(2 * wa * t),
-                      0.5 * np.sin(0.8 * t)])
+                      0.35 * np.sin(0.8 * t)])                # v13: 0.5 -> 0.35
     v = np.array([R0 * wa * np.cos(wa * t), R0 * wa * np.cos(2 * wa * t),
                   0.4 * np.cos(0.8 * t)])
     return p, v, np.arctan2(v[1], v[0])

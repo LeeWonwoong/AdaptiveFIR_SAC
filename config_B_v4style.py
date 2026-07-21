@@ -59,18 +59,24 @@ class Config:
     ekf_R_sigma: float = 0.10           # practitioner datasheet σ [m] (< true 0.12~0.45)
     ekf_Q_scale: float = 0.40           # practitioner process-σ = ekf_Q_scale * q0 (~q0/2.5)
     # UWB anchors (DI-FME layout scaled to workspace)  [4,3]
-    anchors: tuple = ((1.0, 1.0, 0.0), (9.0, 1.0, 3.0),
-                      (9.0, 9.0, 0.0), (1.0, 9.0, 3.0))
-    # GEOMETRY v13 (2026-07-20): upper pair 5 m -> 3 m for deployability
-    # (UIFM-SLAC field setup: 0/3 m). The flight geometry was shrunk to match
-    # (rlenv/synth.py _ref: R0 3.0 -> 2.5 with w 0.30 -> 0.36 so the cruise
-    # speed is unchanged, helical z 1.5+-1.0 -> 1.4+-0.6, figure8 z +-0.8 ->
-    # +-0.5) and commander._pattern_ref hard-clamps the reference to
-    # [2.2, 7.8] x [2.2, 7.8] x [0.8, 2.2]: v12 flew 23 % of trajectories
-    # OUTSIDE the anchor hull (x 0.28-10.07) and up to z = 2.96 m, which with
-    # 3 m anchors would sit essentially IN the anchor plane (near-coplanar ->
-    # z-observability collapse). Verify any new dataset with
-    #     python3 tools/check_dataset.py --data_dir <dir>
+    anchors: tuple = ((1.0, 1.0, 0.0), (9.0, 1.0, 5.0),
+                      (9.0, 9.0, 0.0), (1.0, 9.0, 5.0))
+    # GEOMETRY UPDATE (2026-07-09, measured): anchors pulled IN to 8x8 and the
+    # upper pair raised to z=5 -> steeper elevation angles from the flight band
+    # (z 1~2.6) -> vertical GDOP improves: FIR nominal z 0.145 -> 0.108 (-26%)
+    # at an x,y cost of +0.005. Trajectories (x 1.5~8.4, y 2.7~8.0) remain
+    # inside the anchor hull. Ranges are synthesized OFFLINE from GT + anchors,
+    # so NO Isaac re-run is needed — only retraining on the new measurements.
+    # measurement suite [FROZEN SPEC]: z = 4 UWB ranges ONLY (paper-identical).
+    # The ESTIMATOR internally solves the full 12-state window LS exactly as
+    # DI-FME eq.(8)-(18); the DELIVERABLE (reward/metrics/output claim) is the
+    # position xyz — localization. The weakly observable (v,eta,omega) blocks
+    # of the LS solution are internal byproducts, never delivered and (with
+    # self_anchor=False) never fed back into the linearization.
+    # UWB LoS σ realised at INFME level (R≈0.014 m²; NLoS bursts raise it to
+    # R≈0.2 m² per anchor, INFME-adjacent). This is the FIXED noise statistic
+    # every model-based filter (FME whitening, EKF/UKF R) BELIEVES — it does NOT
+    # know the NLoS σ jump, which is the whole point of [수정C].
     meas_sigma: tuple = (0.10, 0.10, 0.10, 0.10,
                          0.01, 0.01, 0.01,
                          0.005, 0.005, 0.005)
@@ -78,16 +84,11 @@ class Config:
     # ══════════════════════════════════════════════════════════
     #  Weighted FME (filter)
     # ══════════════════════════════════════════════════════════
-    N_min: int = 6                      # observability rank-12 reached at N=2 (UWB+IMU); 4 for noise-reduction margin
+    N_min: int = 4                      # observability rank-12 reached at N=2 (UWB+IMU); 4 for noise-reduction margin
     N_max: int = 20                     # ring-buffer length W (fixed shape). At the
                                         # CALIBRATED process noise q0 the nominal N_opt≈14
                                         # (DI-FME choice) sits mid-range → real headroom.
-    lam_min: float = 0.70
-    # ^ v11c (2026-07-16): widened from 0.75 -- in the v10 30k run the policy's
-    # lambda repeatedly touched the 0.75 floor inside disturbance windows
-    # (measured 0.81-0.91 usage band pressed against the clip), i.e. the bound
-    # was binding. 0.70 gives the policy visible headroom so the lambda trace
-    # in the adaptation figure swings freely. Retrain required after changing.
+    lam_min: float = 0.7
     # IFIABLE -- (N=5,lam=0.8), (N=4,lam=1), (N=7,lam=0.7) give nearly the same
     # effective memory, so the Q-landscape has a ridge along constant-memory
     # contours and SAC parks lambda at an arbitrary low value (measured 0.72-
@@ -164,27 +165,22 @@ class Config:
                                         # (user-selected option 3; groups let SAC tell
                                         #  "UWB trouble (dropout/NLoS)" from "IMU trouble").
                                         # False → legacy per-channel residual vector.
-    n_obs_groups: int = 3               # UWB / attitude / gyro (3 groups, v9f_B-validated)
-    obs_drop_gyro: bool = False          # exclude gyro group from observation
-    obs_group_scale: tuple = (1.192, 2.436, 19.180)
-    # ^ v12 PRECISE re-estimation (2026-07-16): median whitened-innovation norm
-    # per group, computed on the 8 nominal TRAIN trajectories of data_isaac_v12
-    # (held-out set deliberately excluded -- no leakage) x 5 measurement-noise
-    # seeds = 16,760 samples, window 6-48 s, filter at (N_default, lam_default).
-    # IQRs: uwb 0.89-1.55, att 1.75-3.27, gyro 17.8-20.8. Replaces the v10
-    # values (1.233, 2.500, 19.176), which came from 3 held-out trajs x 1 seed.
-    # ^ sbar per group, RE-ESTIMATED 2026-07-16 on v10 (w=0.30, pure payload,
-    #   IMU att 0.01 / gyro 0.005, ambient 0.5) nominal heldout. WFME N=14
-    #   (N_default) whitened group-norm MEDIAN over the 6-48 s eval window, 3
-    #   nominal patterns. att/gyro rose vs the old v9e values (1.14, 1.74, 14.32)
-    #   because the faster w=0.30 cruise raises the attitude/rate innovation
-    #   floor; freezing sbar here keeps the policy's "multiple of nominal" input
-    #   calibrated to THIS dataset (E[eps]~1 in calm flight by construction).
-    #   MEDIAN estimator -- the typical calm level; RMS/mean is rejected because
-    #   the attitude channel is heavy-tailed in agile flight (a handful of
-    #   manoeuvre spikes would push the typical level toward eps~0 and blind the
-    #   channel). Re-estimate whenever the trajectory regime (w), payload
-    #   definition, or sensor setup changes.
+    n_obs_groups: int = 3               # UWB / attitude / gyro
+    obs_group_scale: tuple = (1.14, 1.74, 14.32)
+    # ^ sbar per group, RE-ESTIMATED 2026-07-14 on v9e (0.8x, w=0.4, IMU att 0.01 / gyr 0.005) nominal heldout
+    #   (WFME N=6 innovations, whitened group norms over 6-48 s, 3 patterns,
+    #   MEDIAN estimator -- the typical calm level. RMS/mean is rejected: the
+    #   attitude channel is so heavy-tailed in agile flight (RMS 31 vs median
+    #   1.2) that a mean-based scale would be set by a handful of manoeuvre
+    #   spikes and push the typical level to eps~1e-3, blinding the channel;
+    #   the tail is exactly what the log compression is for). The stale
+    #   values (1.0, 8.0, 12.0) came from the old slow-trajectory system
+    #   and left the attitude/gyro channels at eps=0.02/0.24 in calm v9c
+    #   flight -- compressed to ~0, i.e. the policy was BLIND on the two
+    #   channels that carry the wind/payload signature (measured window
+    #   contrast with corrected sbar: wind eps=(2.5,1.5,6.4), payload
+    #   eps=(1.3,1.8,8.4)). Re-estimate whenever the trajectory regime or
+    #   sensor setup changes.
                                         # ISAAC-MEASURED nominal whitened-norm levels
                                         # (uwb ~1.1-1.3 | att ~2-16 pattern-dep | gyro
                                         #  ~10-22): IMU innovations are MODEL-error
@@ -233,18 +229,15 @@ class Config:
                                         # compressed into [0.95,1.0], invisible to SAC.
                                         # 4 sigma keeps nominal ~0.92 and lets disturbance
                                         # reach ~2 with headroom.
-    episode_len: int = 250              # RL steps per segment. v10 (user-approved,
-                                        # 2026-07-15): 150 -> 250 so a segment contains the
-                                        # full disturbance window PLUS the recovery tail —
-                                        # the return then credits fast post-window recovery.
-                                        # Fits: seg=(20+250+1)*5=1355 < T=2500 (50 s @50 Hz).
+    episode_len: int = 150              # RL steps per segment (shorter -> higher disturbance
+                                        # density + more episodes before alpha settles)
     warmup_steps: int = 20              # aux-EKF-only phase in EPOCHS. Set to N_max so that,
                                         # by the first SAC action, filled_valid == N_max and ANY
                                         # N in [N_min, N_max] is fully available (no growing-window
                                         # transient, no N clipping) — the SEFFB principle that a
                                         # horizon-N filter is used only once N samples are buffered.
     n_envs: int = 64                    # vectorized log-replay envs
-    uwb_sigma_range: tuple = (0.10, 0.10)   # v13: FIXED sigma = 0.10 m == R 0.01 m^2 I4 (UIFM-SLAC Table I)
+    uwb_sigma_range: tuple = (0.07, 0.13)   # per-episode LoS σ randomization [m] (brackets 0.10)
     # Reward: r = -||p_gt - p_hat||  (pure localization error, L2 distance),
     # with a safety clip only (numerical guard, NOT reward engineering).
     reward_clip: float = 10.0           # clip per-step |cost| at 10 m (protects entropy auto-tuning)
@@ -370,13 +363,9 @@ class Config:
     #    anchor_dropout / nlos_burst EXCLUDED from the default mix (IMU fusion
     #    bridges 1-anchor loss → no N* shift; 2-anchor loss = collapse, not
     #    adaptation). Sampler branches remain available for ablations.
-    # v10 (2026-07-15, user decision): TRAIN = HELD-OUT = the same THREE
-    # scenario types. turbulence_burst REMOVED from the mix (heldout was
-    # always 3 types; train now matches, so the policy is never trained on a
-    # disturbance class the paper does not evaluate). Its probability mass is
-    # redistributed to the two disturbance classes.
-    scenario_types: tuple = ("nominal", "mass_step", "sustained_wind")
-    scenario_probs: tuple = (0.15, 0.45, 0.40)
+    scenario_types: tuple = ("nominal", "mass_step",
+                             "sustained_wind", "turbulence_burst")
+    scenario_probs: tuple = (0.15, 0.40, 0.25, 0.20)
     # flight patterns (NO 'aggressive': high-G maneuvers break the 1st-order
     # Taylor linearization the FIR relies on — out of scope by design).
     flight_patterns: tuple = ("helical", "figure8", "waypoint")
@@ -417,14 +406,8 @@ class Config:
     # x,y model error, and the inertia tensor grows with the added mass.
     mass_impulse_z: tuple = (0.6, 1.2)         # downward velocity impulse [m/s] at coupling
     mass_impulse_xy: tuple = (0.3, 0.7)        # lateral velocity impulse [m/s]
-    payload_wind_speed: float = 0.0            # [m/s] coincident wind gust over the
-    # payload window. 0 = DISABLED (option A, 2026-07-16): payload is a pure mass
-    # pickup. The paper reports 3D RMSE, and z growth from the added mass already
-    # lifts payload 3D RMSE above nominal (no wind needed). Set >0 (e.g. 12) to
-    # re-enable a coincident gust that also lifts the x,y axes, if a per-axis
-    # payload comparison is ever wanted. Applied identically in Isaac and synth.
     # gust: SHARP impulsive gusts (FM-SMC abrupt disturbance), not slow ramps
-    gust_speed_range: tuple = (9.0, 15.0)            # v13: aligned with sustained range
+    gust_speed_range: tuple = (12.0, 16.0)           # same tilt-clamp ceiling     # m/s — <15 m/s shifts N* the WRONG way
                                                # (measured: 10 m/s → N*=20, 12 m/s → ±2 ambiguous;
                                                #  ≥15 m/s → N* 14→4). PX4-compensation-exceeding only.
     gust_duration_range: tuple = (4.0, 8.0)    # s (sustained-style; the validated WIN was ~7 s)
@@ -437,13 +420,7 @@ class Config:
     # N shrink -> offset -> N recover, twice per trajectory.
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
-    sustained_speed_range: tuple = (9.0, 15.0)
-    # ^ v13: 9-15 so the 12 m/s held-out row sits at the CENTER of the
-    #   training range. Wind is applied PHYSICALLY in Isaac -> regenerate the
-    #   training split before retraining.
-    # ^ v12 (2026-07-16): train winds 10-15 m/s (was 12-16). The held-out gust
-    # is pinned at 12 m/s, so training covers the test severity with margin on
-    # both sides; the policy still sees strong 15 m/s gusts during training.
+    sustained_speed_range: tuple = (12.0, 16.0)
     # CAP AT 16 m/s (2026-07-13). Holding station against a headwind requires a
     # bank of atan(0.023*v^2 / g): 28 deg at 15 m/s, 31 at 16, 40 at 19, 43 at
     # 20 -- and the trajectory itself now demands another ~8 deg. PX4 clamps the
@@ -453,8 +430,8 @@ class Config:
     # in BOTH gate v7 and gate v8 -- it was crashing, and we mislabelled it as a
     # dropped trajectory. 12-16 keeps a >= 6 deg margin to the clamp while still
     # producing the sustained model error the finite-memory structure needs.
-    ambient_turb_std: float = 0.5
-    ambient_turb_std_range: tuple = (0.5, 0.5)
+    ambient_turb_std: float = 1.0
+    ambient_turb_std_range: tuple = (1.0, 1.0)
     # LIGHT AMBIENT WIND, drawn per trajectory (2026-07-13). Measured effect:
     #   1.4-2.0 m/s -> NO effect (drag ~ v^2 puts the model error BELOW the
     #                  existing nominal residual of 0.2-0.6 m/s^2; verified on
@@ -595,28 +572,28 @@ class Config:
         # THREE flight patterns x THREE scenarios = 9 trajectories. Table II
         # reports, for each scenario, the mean over the three patterns, so a
         # number is never an artefact of one particular path. The DISTURBANCE
-        # is held fixed within a scenario (same 12 m/s, same windows; same
+        # is held fixed within a scenario (same 15 m/s, same windows; same
         # +70%, same CoM, same window) -- only the pattern varies, which is
         # what makes the average meaningful.
         # Figures use the figure-8 rows (h4 wind, h7 payload): the sharpest
         # path, so the entry/recovery transients are the most legible.
         #
         # (type, p_lo, p_hi, windows, extra{turb, com, pattern})
-        ("nominal", 0, 0, (), {"turb": 0.5, "pattern": "helical"}),        # 0
-        ("nominal", 0, 0, (), {"turb": 0.5, "pattern": "figure8"}),        # 1
-        ("nominal", 0, 0, (), {"turb": 0.5, "pattern": "waypoint"}),       # 2
-        ("sustained_wind", 12.0, 12.0, ((6.0, 10.0), (26.0, 10.0)),        # 3
-         {"turb": 0.5, "pattern": "helical"}),
-        ("sustained_wind", 12.0, 12.0, ((6.0, 10.0), (26.0, 10.0)),        # 4  FIG
-         {"turb": 0.5, "pattern": "figure8"}),
-        ("sustained_wind", 12.0, 12.0, ((6.0, 10.0), (26.0, 10.0)),        # 5
-         {"turb": 0.5, "pattern": "waypoint"}),
+        ("nominal", 0, 0, (), {"turb": 1.0, "pattern": "helical"}),        # 0
+        ("nominal", 0, 0, (), {"turb": 1.0, "pattern": "figure8"}),        # 1
+        ("nominal", 0, 0, (), {"turb": 1.0, "pattern": "waypoint"}),       # 2
+        ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 3
+         {"turb": 1.0, "pattern": "helical"}),
+        ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 4  FIG
+         {"turb": 1.0, "pattern": "figure8"}),
+        ("sustained_wind", 15.0, 15.0, ((6.0, 10.0), (26.0, 10.0)),        # 5
+         {"turb": 1.0, "pattern": "waypoint"}),
         ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 6
-         {"turb": 0.5, "com": 0.04, "pattern": "helical"}),
+         {"turb": 1.0, "com": 0.04, "pattern": "helical"}),
         ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 7  FIG
-         {"turb": 0.5, "com": 0.04, "pattern": "figure8"}),
+         {"turb": 1.0, "com": 0.04, "pattern": "figure8"}),
         ("mass_step", 0.70, 0.70, ((15.0, 18.0),),                         # 8
-         {"turb": 0.5, "com": 0.04, "pattern": "waypoint"}),
+         {"turb": 1.0, "com": 0.04, "pattern": "waypoint"}),
     )
     heldout_gust_speed_range: tuple = (14.0, 17.0)   # was (20,24): tilt-clamp crash
     heldout_nlos_bias_range: tuple = (0.5, 0.7)  # stronger NLoS bias (still < gate)

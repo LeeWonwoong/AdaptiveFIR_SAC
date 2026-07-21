@@ -27,6 +27,11 @@ N_TRAIN=${1:-24}
 N_HELDOUT=${2:-6}
 OUT=${3:-data_isaac}
 SPEED=${4:-2.0}
+# HEADLESS=0 으로 실행하면 Isaac 창을 띄운 채 생성한다 (관찰용).
+#   HEADLESS=0 bash datagen/launch_datagen.sh 60 9 data_isaac_v13 1.0
+# 렌더링 비용 때문에 RTF 가 목표 speed 에 못 미칠 수 있으나(=더 오래 걸림),
+# commander 는 SIM time(GT 메시지 카운트) 기반이라 데이터는 동일하다.
+HEADLESS=${HEADLESS:-1}
 
 cd "$(dirname "$0")/.."                      # repo root
 
@@ -45,7 +50,7 @@ echo "[launch] 로그: $LOGDIR/{engine,commander}.log"
 
 # ── 1) Isaac 엔진 (백그라운드) ──
 "$HOME/isaacsim/python.sh" datagen/run_datagen.py \
-    --headless 1 --speed "$SPEED" --out "$OUT" \
+    --headless "$HEADLESS" --speed "$SPEED" --out "$OUT" \
     > "$LOGDIR/engine.log" 2>&1 &
 ENGINE_PID=$!
 cleanup() {

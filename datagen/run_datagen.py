@@ -169,6 +169,11 @@ class DatagenApp:
         self.body_view = None
         self._setup_body_view()
 
+        # Floor guides + overview camera for GUI runs (HEADLESS=0). Never
+        # created in headless datagen, so the generated data is unchanged.
+        if not int(getattr(args, "headless", 1)):
+            self._setup_manual_visuals()
+
     # ---------------- ROS callbacks ----------------
     def _cb_scenario(self, msg):
         try:
@@ -227,6 +232,126 @@ class DatagenApp:
         return ""
 
     # ---------------- physics helpers ----------------
+    def _setup_manual_visuals(self):
+        """Floor guides + tilted overview camera (GUI runs only).
+
+        Visual-only USD prims (no physics APIs), so nothing collides and the
+        logged data is bit-identical to a headless run.
+
+          * bright-green rectangle .... UWB anchor square (hard boundary)
+          * orange poles + ticks ...... anchor positions; ticks at 1.5 / 2.0 m
+                                        (green, recommended band) and 2.5 m
+                                        (orange, ceiling below the 3 m plane)
+          * cyan square ............... 4.4 m lap guide for the payload /
+                                        nominal runs (one lap ~14 s at the
+                                        measured 1.25 m/s cruise)
+          * magenta centre line ....... 5 m straight traverse for the wind
+                                        runs, along the wind axis (y = mid).
+                                        White puck = START (upwind end): with
+                                        dir 180 deg the gust pushes -x, so
+                                        flying east->west needs no lateral
+                                        correction at all.
+
+        Camera tilt/height are env-tunable so the pilot can trade off the
+        top-down view (x-y placement) against the side view (altitude):
+            MANUAL_CAM_TILT=50 MANUAL_CAM_H=15 bash datagen/launch_manual.sh ...
+        """
+        try:
+            import os as _os
+            from pxr import UsdGeom, Gf
+            stage = self.stage
+            root = "/World/ManualAids"
+            UsdGeom.Scope.Define(stage, root)
+
+            anchors = [tuple(a) for a in self._cfg.anchors]
+            xs = [a[0] for a in anchors]
+            ys = [a[1] for a in anchors]
+            x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+            cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+
+            def _cube(name, pos, half, color):
+                p = UsdGeom.Cube.Define(stage, f"{root}/{name}")
+                xf = UsdGeom.Xformable(p.GetPrim())
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+                xf.AddScaleOp().Set(Gf.Vec3f(*half))   # Cube size=2 -> half-extent
+                p.GetDisplayColorAttr().Set([Gf.Vec3f(*color)])
+
+            # ── anchor square (hard boundary) ──
+            t, zs = 0.06, 0.02
+            green = (0.10, 0.90, 0.20)
+            _cube("edge_ymin", (cx, y0, zs), ((x1 - x0) / 2 + t, t, zs), green)
+            _cube("edge_ymax", (cx, y1, zs), ((x1 - x0) / 2 + t, t, zs), green)
+            _cube("edge_xmin", (x0, cy, zs), (t, (y1 - y0) / 2 + t, zs), green)
+            _cube("edge_xmax", (x1, cy, zs), (t, (y1 - y0) / 2 + t, zs), green)
+
+            # ── anchors: pole + head, plus altitude ticks on the tall pair ──
+            for i, (ax, ay, az) in enumerate(anchors):
+                h = max(az, 0.4)
+                _cube(f"anchor{i}_pole", (ax, ay, h / 2),
+                      (0.03, 0.03, h / 2), (1.0, 0.55, 0.10))
+                _cube(f"anchor{i}_head", (ax, ay, az if az > 0 else 0.4),
+                      (0.09, 0.09, 0.09), (1.0, 0.35, 0.05))
+                if az <= 0:
+                    continue
+                for zt, col in ((1.5, (0.1, 0.9, 0.2)), (2.0, (0.1, 0.9, 0.2)),
+                                (2.5, (1.0, 0.55, 0.1))):
+                    if zt < az:
+                        _cube(f"tick{i}_{int(zt * 10)}", (ax, ay, zt),
+                              (0.16, 0.16, 0.015), col)
+
+            # ── cyan lap guide: square, side 4.4 m (v13: 4.0 -> 4.4) ──
+            margin = 1.8
+            wx0, wx1 = x0 + margin, x1 - margin
+            wy0, wy1 = y0 + margin, y1 - margin
+            wcx, wcy = 0.5 * (wx0 + wx1), 0.5 * (wy0 + wy1)
+            cyan, zg = (0.15, 0.65, 1.00), 0.035
+            _cube("lap_ymin", (wcx, wy0, zg), ((wx1 - wx0) / 2 + t, t, 0.02), cyan)
+            _cube("lap_ymax", (wcx, wy1, zg), ((wx1 - wx0) / 2 + t, t, 0.02), cyan)
+            _cube("lap_xmin", (wx0, wcy, zg), (t, (wy1 - wy0) / 2 + t, 0.02), cyan)
+            _cube("lap_xmax", (wx1, wcy, zg), (t, (wy1 - wy0) / 2 + t, 0.02), cyan)
+            for j, (px, py) in enumerate([(wx0, wy0), (wx1, wy0),
+                                          (wx1, wy1), (wx0, wy1)]):
+                _cube(f"lap_corner{j}", (px, py, 0.10), (0.12, 0.12, 0.10),
+                      (1.0, 1.0, 1.0) if j == 0 else cyan)
+
+            # ── magenta centre line: 5 m wind traverse along x at y = cy ──
+            lx0, lx1 = cx - 2.5, cx + 2.5
+            mag = (1.00, 0.25, 0.85)
+            _cube("wind_line", (cx, cy, 0.045),
+                  ((lx1 - lx0) / 2, 0.05, 0.02), mag)
+            for k in range(1, 5):                       # 1 m tick marks
+                _cube(f"wind_tick{k}", (lx0 + k, cy, 0.05),
+                      (0.03, 0.22, 0.02), mag)
+            _cube("wind_start", (lx1, cy, 0.11), (0.14, 0.14, 0.11),
+                  (1.0, 1.0, 1.0))                      # upwind END = START
+            _cube("wind_end", (lx0, cy, 0.11), (0.12, 0.12, 0.10), mag)
+
+            # ── tilted overview camera ──
+            import math as _math
+            tilt = float(_os.environ.get("MANUAL_CAM_TILT", "42"))
+            hcam = float(_os.environ.get("MANUAL_CAM_H", "13.5"))
+            dback = _math.tan(_math.radians(tilt)) * (hcam - 1.0)
+            cam = UsdGeom.Camera.Define(stage, f"{root}/OverviewCam")
+            xf = UsdGeom.Xformable(cam.GetPrim())
+            xf.ClearXformOpOrder()
+            xf.AddTranslateOp().Set(Gf.Vec3d(cx, cy - dback, hcam))
+            xf.AddRotateXOp().Set(tilt)
+            try:
+                from omni.kit.viewport.utility import get_active_viewport
+                vp = get_active_viewport()
+                if vp is not None:
+                    vp.camera_path = f"{root}/OverviewCam"
+            except Exception as e:
+                carb.log_warn(f"[manual-aids] camera switch failed ({e}); pick "
+                              f"{root}/OverviewCam in the viewport menu")
+            carb.log_warn(
+                f"[manual-aids] anchor square {x0:g}-{x1:g} m | lap square "
+                f"{wx0:g}-{wx1:g} m (side {wx1 - wx0:g}) | wind line "
+                f"x {lx0:g}->{lx1:g} at y={cy:g} | cam tilt {tilt:g} deg h={hcam:g}")
+        except Exception as e:
+            carb.log_warn(f"[manual-aids] skipped: {e}")
+
     def _setup_body_view(self):
         try:
             self.body_view = RigidPrimView(

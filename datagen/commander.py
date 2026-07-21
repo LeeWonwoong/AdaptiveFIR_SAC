@@ -121,6 +121,11 @@ class Commander(Node):
         self.scenario = None
         self.retry_count = 0
         self.MAX_RETRY = 3
+        self.phase0 = 0.0            # pattern phase offset (see _best_phase)
+        self._ascend_aligned = False
+        self._clamp_warned = False
+        self._terr_in = []           # tracking error inside disturbance windows
+        self._terr_out = []          # ... outside
         # ── live-log state (online_rl_main-style console feedback) ──
         self._airborne = False           # takeoff detected this traj
         self._flag_state = {}            # disturbance-window ON/OFF edges
@@ -197,10 +202,63 @@ class Commander(Node):
         self.pub_control.publish(m)
 
     # ────────────────────────────── pattern reference (ENU, shared with synth)
+    # v13 safety box: the commanded reference is HARD-CLAMPED inside the
+    # anchor square (1-9 m) with 1.2 m of margin and below the 3 m anchor
+    # plane. With the v13 pattern geometry (R0=2.5, reduced z amplitudes) the
+    # clamp never engages in normal operation -- it exists so that no future
+    # parameter change can silently command the vehicle out of the hull.
+    REF_LO = np.array([2.2, 2.2, 0.8])
+    REF_HI = np.array([7.8, 7.8, 2.2])
+
     def _pattern_ref(self, t):
         c = np.array([self.args.cx, self.args.cy, self.args.alt])
-        p, v, yaw = _ref(self.scenario["pattern"], t, c=c)
-        return p, v, yaw
+        p, v, yaw = _ref(self.scenario["pattern"], t + self.phase0, c=c)
+        p_c = np.clip(p, self.REF_LO, self.REF_HI)
+        if not np.allclose(p_c, p) and not self._clamp_warned:
+            self._clamp_warned = True
+            self.get_logger().warn(
+                f"  [REF] safety clamp engaged at t={t:.1f}s "
+                f"({p[0]:.2f},{p[1]:.2f},{p[2]:.2f}) -> "
+                f"({p_c[0]:.2f},{p_c[1]:.2f},{p_c[2]:.2f})")
+        return p_c, v, yaw
+
+    def _best_phase(self, pos):
+        """Pattern phase whose reference point is closest to pos.
+
+        Used when ASCEND times out without settling. Starting the pattern at
+        phase 0 while the vehicle sits 2+ m away made it chase the moving
+        setpoint with a permanent ~2.3 m lag for the whole flight, which is
+        what dragged the flown path outside the anchor square. Starting at
+        the phase the vehicle is ALREADY on removes that offset.
+        """
+        _p0 = self.phase0
+        self.phase0 = 0.0
+        try:
+            ts = np.linspace(0.0, 60.0, 601)
+            d = [float(np.linalg.norm(self._pattern_ref(t)[0] - pos))
+                 for t in ts]
+            return float(ts[int(np.argmin(d))])
+        finally:
+            self.phase0 = _p0
+
+    def _log_terr_summary(self):
+        """Control-level evidence that the disturbance actually perturbed the
+        vehicle: mean/peak tracking error inside vs outside the windows."""
+        import statistics as _st
+        _in, _out = self._terr_in, self._terr_out
+        if not _out:
+            return
+        m_out, p_out = _st.fmean(_out), max(_out)
+        if _in:
+            m_in, p_in = _st.fmean(_in), max(_in)
+            self.get_logger().warn(
+                f"  📊 추종오차 | 정상 {m_out:.2f} m (최대 {p_out:.2f}, "
+                f"n={len(_out)})  vs  외란 {m_in:.2f} m (최대 {p_in:.2f}, "
+                f"n={len(_in)})  →  {m_in / max(m_out, 1e-6):.2f}배")
+        else:
+            self.get_logger().info(
+                f"  📊 추종오차 | 정상 {m_out:.2f} m "
+                f"(최대 {p_out:.2f}, n={len(_out)}) — 외란 창 없음")
 
     # ────────────────────────────── live-log helpers (online_rl_main style)
     @staticmethod
@@ -299,6 +357,8 @@ class Commander(Node):
                 self.get_logger().info(
                     f"  [TAKEOFF] Arm + OFFBOARD 전환 (heartbeat {self.state_t:.1f}s, "
                     f"pre-flight {'OK' if self.px4_ready else 'unknown'})")
+                self.phase0 = 0.0
+                self._ascend_aligned = False
                 self._goto("ASCEND")
 
         elif self.state == "ASCEND":
@@ -311,6 +371,22 @@ class Commander(Node):
             # never engaged. Splitting the motion removes that failure mode,
             # and the nav_state now in the log tells us the mode if it recurs.
             self._send_offboard()
+            # v13: once the vehicle is at altitude, aim at the CLOSEST point
+            # of the pattern instead of phase 0. Chasing phase 0 meant a long
+            # lateral slide (up to 9 m from the spawn point) that frequently
+            # timed out with the vehicle parked near the pattern CENTRE --
+            # from which every phase is R0 away, so the flight then ran the
+            # whole pattern with a permanent ~2.3 m lag and was dragged
+            # outside the anchor square. Aligning first makes the approach
+            # short and starts the pattern on-path.
+            if (not self._ascend_aligned and self.gt_seen
+                    and self.gt_pos[2] > 0.8 * self.args.alt):
+                self.phase0 = self._best_phase(self.gt_pos)
+                self._ascend_aligned = True
+                self.get_logger().info(
+                    f"  [ASCEND] 경로 위상 정렬: phase0={self.phase0:.1f}s "
+                    f"(목표까지 "
+                    f"{float(np.linalg.norm(self._pattern_ref(0.0)[0] - self.gt_pos)):.2f} m)")
             p0, _, yaw0 = self._pattern_ref(0.0)
             # Ambient-wind-aware settle gate: at 3.5 m/s a hovering quad
             # wanders 0.9-1.4 m, so the still-air 0.4 m tolerance is
@@ -365,6 +441,9 @@ class Commander(Node):
                 self.get_logger().info(
                     f"  ✅ 시작점 정착 (d={float(np.linalg.norm(self.gt_pos - p0)):.2f} m)"
                     f" → FLY, 로깅 ON")
+                self.phase0 = 0.0
+                self._terr_in, self._terr_out = [], []
+                self._clamp_warned = False
                 self._control("start_log")
                 self.fly_t = 0.0
                 self.fly_t0_sim = -1.0
@@ -377,9 +456,17 @@ class Commander(Node):
                 # is what silently ATE trajectories h2/h4 from the last gate.)
                 if self.gt_seen and abs(self.gt_pos[2] - p0[2]) < 0.6:
                     d0 = float(np.linalg.norm(self.gt_pos - p0))
+                    if not self._ascend_aligned:
+                        self.phase0 = self._best_phase(self.gt_pos)
+                        self._ascend_aligned = True
+                    _d1 = float(np.linalg.norm(
+                        self._pattern_ref(0.0)[0] - self.gt_pos))
                     self.get_logger().warn(
                         f"  [ASCEND] 정착 미달(d={d0:.2f}>{_tol:.2f})이지만 고도 도달"
-                        f" — 패턴 시작 (초반 과도는 평가에서 절삭)")
+                        f" — 위상 정렬 후 시작 (phase0={self.phase0:.1f}s, "
+                        f"잔여 d={_d1:.2f} m)")
+                    self._terr_in, self._terr_out = [], []
+                    self._clamp_warned = False
                     self._control("start_log")
                     self.fly_t = 0.0
                     self.fly_t0_sim = -1.0
@@ -429,6 +516,11 @@ class Commander(Node):
                     self.get_logger().info(
                         f"  🟢 외란 OFF @ t={self.fly_t:5.1f}s: {name}")
                 self._flag_state[name] = on
+            # ── 추종오차를 외란 창 안/밖으로 나눠 누적 (v13 진단) ──
+            if self.gt_seen:
+                (self._terr_in if any(flags.values())
+                 else self._terr_out).append(
+                    float(np.linalg.norm(self.gt_pos - p)))
             # ── 추적 로그 (2s 주기): 위치·추적오차·활성 외란 ──
             if self.gt_seen and self.fly_t - self._last_fly_log >= 2.0:
                 self._last_fly_log = self.fly_t
@@ -456,6 +548,7 @@ class Commander(Node):
                 self._control("reset")
                 self._goto("RESET_WAIT", retry=True)
             elif self.fly_t >= self.scenario["duration_s"]:
+                self._log_terr_summary()
                 self._control("stop_save")
                 self._goto("SAVE_WAIT")
 

@@ -189,9 +189,12 @@ def main():
 
         # [1] adapted horizon N_k vs the fixed FME window
         nc = moving_avg(N[idx].mean(0), cfg, 0.3)
-        ax[1].plot(t, nc, "-", color="k", lw=1.3, label="AFME (proposed)")
-        ax[1].axhline(a.fme_n, ls="--", color=COLORS["FME"], lw=0.9,
-                      label=f"FME ($N{{=}}{a.fme_n}$)")
+        ax[1].plot(t, nc, "-", color="k", lw=1.3)
+        ax[1].axhline(a.fme_n, ls="--", color=COLORS["FME"], lw=0.9)
+        ax[1].text(0.995, a.fme_n, f"FME $N{{=}}{a.fme_n}$",
+                   transform=__import__('matplotlib.transforms',fromlist=['x']).blended_transform_factory(ax[1].transAxes,
+                                                           ax[1].transData),
+                   ha="right", va="bottom", fontsize=6.5, color=COLORS["FME"])
         ax[1].set_ylabel(r"$N_k$")
         nlo, nhi = nc[k0:k1].min(), max(nc[k0:k1].max(), a.fme_n)
         ax[1].set_ylim(max(cfg.N_min - 2, nlo - 2), min(cfg.N_max, nhi + 2))
@@ -199,6 +202,10 @@ def main():
         # [2] adapted forgetting factor lambda_k vs the fixed FME value
         ax[2].plot(t, moving_avg(L[idx].mean(0), cfg, 0.3), "-", color="k", lw=1.3)
         ax[2].axhline(FME_LAM, ls="--", color=COLORS["FME"], lw=0.9)
+        ax[2].text(0.995, FME_LAM, f"FME $\\lambda{{=}}{FME_LAM:g}$",
+                   transform=__import__('matplotlib.transforms',fromlist=['x']).blended_transform_factory(ax[2].transAxes,
+                                                           ax[2].transData),
+                   ha="right", va="bottom", fontsize=6.5, color=COLORS["FME"])
         ax[2].set_ylabel(r"$\lambda_k$")
         ax[2].set_ylim(cfg.lam_min - 0.02, 1.0)
         ax[2].set_xlabel("time [s]")
@@ -212,20 +219,17 @@ def main():
             A.grid(alpha=0.25)
         ax[0].set_xticks(xticks)
         ax[0].set_title(title, fontsize=11, pad=16)
+        _lab, _sz = labels[key]
+        _annotate(ax[0], wins, _lab, a.label_color, _sz, a.label_y)
 
         # single figure legend above the top panel: the four error curves plus
         # the fixed-FME horizon line, de-duplicated so "AFME (proposed)" (which
         # labels both the green error curve and the black N_k/lambda_k trace)
         # appears only once.
         h0, l0 = ax[0].get_legend_handles_labels()
-        h1, l1 = ax[1].get_legend_handles_labels()
-        hh, ll = list(h0), list(l0)
-        for h, l in zip(h1, l1):
-            if l not in ll:
-                hh.append(h); ll.append(l)
-        fig.legend(hh, ll, ncol=3, loc="upper center",
-                   bbox_to_anchor=(0.5, 1.06), frameon=False,
-                   columnspacing=1.0, handlelength=1.6)
+        fig.legend(h0, l0, ncol=len(l0), loc="upper center",
+                   bbox_to_anchor=(0.5, 1.045), frameon=False,
+                   columnspacing=1.0, handlelength=1.5, handletextpad=0.4)
 
         for ext in ("pdf", "png"):
             fig.savefig(os.path.join(a.outdir, f"fig_{key}.{ext}"),
