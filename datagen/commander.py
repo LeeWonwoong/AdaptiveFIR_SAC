@@ -40,6 +40,10 @@ from std_msgs.msg import String
 from nav_msgs.msg import Odometry
 from px4_msgs.msg import (OffboardControlMode, TrajectorySetpoint,
                           VehicleCommand, VehicleStatus)
+try:
+    from px4_msgs.msg import VehicleOdometry
+except ImportError:                                      # older px4_msgs
+    VehicleOdometry = None
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config                                # noqa: E402
@@ -99,6 +103,22 @@ class Commander(Node):
                        f"{ns}/fmu/out/vehicle_status"):
             self.create_subscription(VehicleStatus, _topic,
                                      self._cb_status, qos_px4)
+        # v13 frame-offset compensation: after a world reset PX4's EKF2 can
+        # re-converge with its local origin SHIFTED w.r.t. the simulator world
+        # frame (the teleport is absorbed as a position jump). Setpoints are
+        # interpreted in the PX4 frame, so the whole flight then executes with
+        # a constant world-frame offset (observed: 5.8 m -> trajectory fully
+        # outside the anchor square). We estimate offset = GT - PX4 odometry
+        # (both ENU) with an EMA and add it to every outgoing setpoint, which
+        # closes the loop in the WORLD frame regardless of EKF2 origin drift.
+        self.px4_pos = None                   # ENU, from PX4 odometry
+        self.frame_off = np.zeros(3)          # EMA of (gt - px4)
+        self._off_n = 0
+        if VehicleOdometry is not None:
+            for _topic in (f"{ns}/fmu/out/vehicle_odometry",
+                           f"{ns}/fmu/out/vehicle_odometry_v1"):
+                self.create_subscription(VehicleOdometry, _topic,
+                                         self._cb_px4_odom, qos_be)
         self.px4_armed = False
         self.px4_ready = False          # pre-flight checks pass
         self.px4_offboard = False
@@ -139,6 +159,13 @@ class Commander(Node):
 
     # ────────────────────────────── ROS helpers
     def _cb_gt(self, msg):
+        if self.px4_pos is not None:
+            inst = np.array([msg.pose.pose.position.x,
+                             msg.pose.pose.position.y,
+                             msg.pose.pose.position.z]) - self.px4_pos
+            k = 0.05 if self._off_n > 20 else 0.5        # fast lock, slow track
+            self.frame_off = (1 - k) * self.frame_off + k * inst
+            self._off_n += 1
         self.gt_pos[:] = [msg.pose.pose.position.x,
                           msg.pose.pose.position.y,
                           msg.pose.pose.position.z]
@@ -160,7 +187,17 @@ class Commander(Node):
         m.timestamp = 0
         self.pub_offboard.publish(m)
 
+    def _cb_px4_odom(self, m):
+        # PX4 odometry position is NED -> ENU
+        self.px4_pos = np.array([float(m.position[1]), float(m.position[0]),
+                                 -float(m.position[2])])
+
     def _send_setpoint_enu(self, p_enu, v_enu=None, yaw_enu=0.0):
+        # world-frame target -> PX4-frame setpoint (see frame_off above):
+        # PX4 flies to sp in ITS frame; vehicle lands at sp + (gt - px4),
+        # so command sp = target - frame_off.
+        if self._off_n > 5:
+            p_enu = np.asarray(p_enu, dtype=float) - self.frame_off
         p, v, yaw = enu_to_ned(p_enu, v_enu, yaw_enu)
         m = TrajectorySetpoint()
         m.position = [float(p[0]), float(p[1]), float(p[2])]
@@ -461,6 +498,14 @@ class Commander(Node):
                         self._ascend_aligned = True
                     _d1 = float(np.linalg.norm(
                         self._pattern_ref(0.0)[0] - self.gt_pos))
+                    if _d1 > 3.0:
+                        self.get_logger().error(
+                            f"  [ASCEND] 정렬 후에도 잔여 d={_d1:.2f} m > 3 — "
+                            f"프레임 오프셋/자세 이상, 재시도로 회송 "
+                            f"(frame_off={self.frame_off.round(2).tolist()})")
+                        self._control("reset")
+                        self._goto("RESET_WAIT", retry=True)
+                        return
                     self.get_logger().warn(
                         f"  [ASCEND] 정착 미달(d={d0:.2f}>{_tol:.2f})이지만 고도 도달"
                         f" — 위상 정렬 후 시작 (phase0={self.phase0:.1f}s, "
@@ -562,6 +607,9 @@ class Commander(Node):
         elif self.state == "RESET_WAIT":             # world reset + PX4 re-settle
             if self.state_t > self.args.reset_wait:
                 self.gt_seen = False
+                self.px4_pos = None
+                self.frame_off[:] = 0.0
+                self._off_n = 0
                 self._goto("INIT")
 
     def _goto(self, s, retry=False):
