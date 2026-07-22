@@ -163,76 +163,83 @@ def main():
         ("payload", "Payload", scen["payload"], PAYLOAD_WINDOWS, "#ff7f0e"),
     ]
 
-    # ---- combined per-scenario figure: 3 rows (error / N_k / lambda_k) ----
-    # One figure per scenario (wind, payload). The three panels share the same
-    # time axis so the disturbance shading lines up vertically across error,
-    # horizon and forgetting-factor traces.
+    # ---- per-scenario figures (paper convention) ----
+    # fig2_<scen>: ONE panel, localization error only, x-axis in time steps k
+    # fig3_<scen>: two stacked panels N_k / lambda_k sharing the same axis
     k0, k1 = int((EVAL_T0 + 1) / cfg.dt), int(EVAL_T1 / cfg.dt)
+    tk = np.arange(ds.T)                     # x-axis: time step k
+    kticks = [500, 1000, 1500, 2000]
     N, L = res["AFME"]["N"], res["AFME"]["lam"]
     for key, title, idx, wins, shade in cases:
-        fig, ax = plt.subplots(3, 1, figsize=(a.width, 4.8), sharex=True,
-                               constrained_layout=True)
+        wins_k = [(s0 / cfg.dt, s1 / cfg.dt) for (s0, s1) in wins]
+        _lab, _sz = labels[key]
 
-        # [0] 3-D position error -- all four estimators
+        # ── fig2: localization error, single panel ──
+        fig, ax = plt.subplots(figsize=(a.width, 2.6),
+                               constrained_layout=True)
         lo, hi = np.inf, -np.inf
         for m in methods:
             c = moving_rms(np.sqrt((err_norm(evec_for(m, key))[idx] ** 2).mean(0)),
                            cfg, a.smooth)
             lo, hi = min(lo, c[k0:k1].min()), max(hi, c[k0:k1].max())
-            ax[0].plot(t, c, STYLE[m],
-                       color="black" if m == "EKF" else COLORS[m],
-                       lw=1.6 if m == "AFME" else 1.0,
-                       label=m + (" (proposed)" if m == "AFME" else ""))
-        ax[0].set_ylabel("Localization error [m]")
+            ax.plot(tk, c, STYLE[m],
+                    color="black" if m == "EKF" else COLORS[m],
+                    lw=2.0 if m == "AFME" else 1.2,
+                    label=m + (" (proposed)" if m == "AFME" else ""))
+        for (w0, w1) in wins_k:
+            ax.axvspan(w0, w1, color=shade, alpha=0.12, zorder=0)
+        _annotate(ax, wins_k, _lab, a.label_color, _sz, a.label_y)
         span = hi - lo
-        ax[0].set_ylim(max(0.0, lo - 0.08 * span), hi + 0.10 * span)
-
-        # [1] adapted horizon N_k vs the fixed FME window
-        nc = moving_avg(N[idx].mean(0), cfg, 0.3)
-        ax[1].plot(t, nc, "-", color="k", lw=1.3)
-        ax[1].axhline(a.fme_n, ls="--", color=COLORS["FME"], lw=0.9)
-        ax[1].text(0.995, a.fme_n, f"FME $N{{=}}{a.fme_n}$",
-                   transform=__import__('matplotlib.transforms',fromlist=['x']).blended_transform_factory(ax[1].transAxes,
-                                                           ax[1].transData),
-                   ha="right", va="bottom", fontsize=6.5, color=COLORS["FME"])
-        ax[1].set_ylabel(r"$N_k$")
-        nlo, nhi = nc[k0:k1].min(), max(nc[k0:k1].max(), a.fme_n)
-        ax[1].set_ylim(max(cfg.N_min - 2, nlo - 2), min(cfg.N_max, nhi + 2))
-
-        # [2] adapted forgetting factor lambda_k vs the fixed FME value
-        ax[2].plot(t, moving_avg(L[idx].mean(0), cfg, 0.3), "-", color="k", lw=1.3)
-        ax[2].axhline(FME_LAM, ls="--", color=COLORS["FME"], lw=0.9)
-        ax[2].text(0.995, FME_LAM, f"FME $\\lambda{{=}}{FME_LAM:g}$",
-                   transform=__import__('matplotlib.transforms',fromlist=['x']).blended_transform_factory(ax[2].transAxes,
-                                                           ax[2].transData),
-                   ha="right", va="bottom", fontsize=6.5, color=COLORS["FME"])
-        ax[2].set_ylabel(r"$\lambda_k$")
-        ax[2].set_ylim(cfg.lam_min - 0.02, 1.0)
-        ax[2].set_xlabel("time [s]")
-
-        # shared: disturbance shading on every row (vertical alignment is the
-        # point of the stacked layout), plus common x-range / ticks / grid
-        for A in ax:
-            for (s0, s1) in wins:
-                A.axvspan(s0, s1, color=shade, alpha=0.12, zorder=0)
-            A.set_xlim(EVAL_T0 + 1, EVAL_T1)
-            A.grid(alpha=0.25)
-        ax[0].set_xticks(xticks)
-        ax[0].set_title(title, fontsize=11, pad=16)
-        _lab, _sz = labels[key]
-        _annotate(ax[0], wins, _lab, a.label_color, _sz, a.label_y)
-
-        # single figure legend above the top panel: the four error curves plus
-        # the fixed-FME horizon line, de-duplicated so "AFME (proposed)" (which
-        # labels both the green error curve and the black N_k/lambda_k trace)
-        # appears only once.
-        h0, l0 = ax[0].get_legend_handles_labels()
-        fig.legend(h0, l0, ncol=len(l0), loc="upper center",
-                   bbox_to_anchor=(0.5, 1.045), frameon=False,
-                   columnspacing=1.0, handlelength=1.5, handletextpad=0.4)
-
+        ax.set_ylim(max(0.0, lo - 0.08 * span), hi + 0.12 * span)
+        ax.set_xlim(k0, k1)
+        ax.set_xticks(kticks)
+        ax.set_ylabel("Localization error [m]")
+        ax.set_xlabel("time step ($k$)")
+        ax.grid(alpha=0.25)
+        ax.legend(ncol=len(methods), loc="lower center",
+                  bbox_to_anchor=(0.5, 1.0), frameon=False,
+                  columnspacing=1.0, handlelength=1.6, handletextpad=0.4)
+        fig.suptitle(title, y=1.16, fontsize=11)
         for ext in ("pdf", "png"):
-            fig.savefig(os.path.join(a.outdir, f"fig_{key}.{ext}"),
+            fig.savefig(os.path.join(a.outdir, f"fig2_{key}.{ext}"),
+                        bbox_inches="tight", dpi=150)
+        plt.close(fig)
+
+        # ── fig3: adaptation, N_k over lambda_k ──
+        fig, ax = plt.subplots(2, 1, figsize=(a.width, 3.1), sharex=True,
+                               constrained_layout=True)
+        _bt = __import__('matplotlib.transforms',
+                         fromlist=['x']).blended_transform_factory
+        nc = moving_avg(N[idx].mean(0), cfg, 0.3)
+        ax[0].plot(tk, nc, "-", color="k", lw=1.3)
+        ax[0].axhline(a.fme_n, ls="--", color=COLORS["FME"], lw=0.9)
+        ax[0].text(0.995, a.fme_n, f"FME $N{{=}}{a.fme_n}$",
+                   transform=_bt(ax[0].transAxes, ax[0].transData),
+                   ha="right", va="bottom", fontsize=6.5, color=COLORS["FME"])
+        ax[0].set_ylabel(r"$N_k$")
+        nlo, nhi = nc[k0:k1].min(), max(nc[k0:k1].max(), a.fme_n)
+        ax[0].set_ylim(max(cfg.N_min - 2, nlo - 2), min(cfg.N_max, nhi + 2))
+
+        ax[1].plot(tk, moving_avg(L[idx].mean(0), cfg, 0.3), "-",
+                   color="k", lw=1.3)
+        ax[1].axhline(FME_LAM, ls="--", color=COLORS["FME"], lw=0.9)
+        ax[1].text(0.995, FME_LAM, f"FME $\\lambda{{=}}{FME_LAM:g}$",
+                   transform=_bt(ax[1].transAxes, ax[1].transData),
+                   ha="right", va="bottom", fontsize=6.5, color=COLORS["FME"])
+        ax[1].set_ylabel(r"$\lambda_k$")
+        ax[1].set_ylim(cfg.lam_min - 0.02, 1.0)
+        ax[1].set_xlabel("time step ($k$)")
+
+        for A in ax:
+            for (w0, w1) in wins_k:
+                A.axvspan(w0, w1, color=shade, alpha=0.12, zorder=0)
+            A.set_xlim(k0, k1)
+            A.grid(alpha=0.25)
+        ax[0].set_xticks(kticks)
+        _annotate(ax[0], wins_k, _lab, a.label_color, _sz, a.label_y)
+        ax[0].set_title(title, fontsize=11, pad=6)
+        for ext in ("pdf", "png"):
+            fig.savefig(os.path.join(a.outdir, f"fig3_{key}.{ext}"),
                         bbox_inches="tight", dpi=150)
         plt.close(fig)
 
@@ -242,11 +249,12 @@ def main():
              " (nominal/disturb)" if split_q
              else f"Q_EKF={a.q_ekf:g} Q_UKF={a.q_ukf:g} "
                   f"R_EKF={a.r_ekf:g} R_UKF={a.r_ukf:g}")
-    print(f"wrote 2 figures to {outabs}\\ "
+    print(f"wrote 4 figures to {outabs} "
           f"(seed {a.seed}, {a.smooth:g}s moving RMS, "
           f"filters: {', '.join(methods)}, {qnote})")
     for key in ("wind", "payload"):
-        print(f"  {os.path.join(outabs, f'fig_{key}.png')}")
+        for pfx in ("fig2", "fig3"):
+            print(f"  {os.path.join(outabs, f'{pfx}_{key}.png')}")
 
 
 if __name__ == "__main__":
