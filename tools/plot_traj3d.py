@@ -76,6 +76,14 @@ def meta_windows(sc):
 
 def draw_scene(ax, cfg, gt, est, wins, dt, title, zoom=None):
     anchors = np.array([list(a) for a in cfg.anchors], dtype=float)
+    # DISPLAY-ONLY origin shift (paper convention): translate so the anchor
+    # square reads 0..8 m instead of 1..9 m. Pure translation -- ranges and
+    # every error are invariant, the estimator maths all ran in the original
+    # frame. The tex lists the anchors as (0,0,0),(8,0,3),(8,8,0),(0,8,3).
+    _sh = np.array([anchors[:, 0].min(), anchors[:, 1].min(), 0.0])
+    anchors = anchors - _sh
+    gt = gt.copy(); gt[:, :3] = gt[:, :3] - _sh
+    est = {m: e - _sh for m, e in est.items()}
     # anchor frame: markers + drop lines + dashed ground rectangle
     ax.scatter(anchors[:, 0], anchors[:, 1], anchors[:, 2], marker="s",
                s=48, c="#ffd400", edgecolors="k", linewidths=0.6,
@@ -124,6 +132,9 @@ def draw_scene(ax, cfg, gt, est, wins, dt, title, zoom=None):
         # keep the FULL vertical scale (0 .. anchor plane): a tight z-crop
         # stretches the axis and makes centimetre-level z jitter look wild
         ax.set_zlim(0, max(anchors[:, 2].max(), p[:, 2].max()) + 0.3)
+    from matplotlib.ticker import MultipleLocator
+    for _axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        _axis.set_major_locator(MultipleLocator(1.0))
     ax.set_xlabel("x (m)", fontsize=8)
     ax.set_ylabel("y (m)", fontsize=8)
     ax.set_zlabel("z (m)", fontsize=8)
@@ -216,14 +227,16 @@ def main():
         _mask = np.zeros(gt.shape[0], dtype=bool)
         for (_s0, _s1, _l) in wins:
             _mask[int(_s0 / cfg.dt):min(int(_s1 / cfg.dt), gt.shape[0])] = True
-        add_flat_highlight(fig, ax, gt[:, :3], _mask,
+        _sh2 = np.array([min(a[0] for a in cfg.anchors),
+                         min(a[1] for a in cfg.anchors), 0.0])
+        add_flat_highlight(fig, ax, gt[:, :3] - _sh2, _mask,
                            wins[0][2] if wins else "")
         if panels == 2:
             ax2 = fig.add_subplot(1, 2, 2, projection="3d")
             draw_scene(ax2, cfg, gt, est, wins, cfg.dt,
                        "disturbance window (zoom)", zoom=True)
             ax2.view_init(elev=a.elev, azim=a.azim)
-            add_flat_highlight(fig, ax2, gt[:, :3], _mask,
+            add_flat_highlight(fig, ax2, gt[:, :3] - _sh2, _mask,
                                wins[0][2] if wins else "")
         fig.tight_layout()
         for ext in ("pdf", "png"):

@@ -76,8 +76,8 @@ class Runner:
         evec = torch.zeros(M, T, 3, device=self.dev)   # per-axis error
         Ns = torch.zeros(M, T, device=self.dev)
         Ls = torch.zeros(M, T, device=self.dev)
-        feat = (cfg.n_obs_groups + 2) if cfg.obs_channel_norms \
-            else (cfg.meas_dim + 2)
+        feat = (cfg.n_obs_groups + cfg._n_par_feat) if cfg.obs_channel_norms \
+            else (cfg.meas_dim + cfg._n_par_feat)
         stack = torch.zeros(M, cfg.L_obs, feat, device=self.dev)   # [M,L,feat]
         grp_scale = torch.tensor(cfg.obs_group_scale[:cfg.n_obs_groups],
                                  device=self.dev).view(1, -1)
@@ -88,6 +88,8 @@ class Runner:
             return 2.0 * (N - cfg.N_min) / max(cfg.N_max - cfg.N_min, 1e-6) - 1.0
 
         def _nL(lm):
+            if getattr(cfg, "lam_fixed", -1.0) > 0:
+                return torch.zeros_like(lm) if hasattr(lm, "shape") else 0.0
             return 2.0 * (lm - cfg.lam_min) / max(1.0 - cfg.lam_min, 1e-6) - 1.0
 
         def _push(nu, N, lm):
@@ -104,7 +106,10 @@ class Runner:
                 head = (g / grp_scale).clamp(max=cfg.resid_clip)
             else:
                 head = r.clamp(-cfg.resid_clip, cfg.resid_clip)
-            return torch.cat([head, _nN(N).unsqueeze(1), _nL(lm).unsqueeze(1)], dim=1)
+            cols = [head, _nN(N).unsqueeze(1)]
+            if getattr(cfg, "lam_fixed", -1.0) <= 0:
+                cols.append(_nL(lm).unsqueeze(1))
+            return torch.cat(cols, dim=1)
         combos = None
         if oracle:
             Ng = torch.tensor([8., 12., 16., 20.], device=self.dev)
@@ -124,8 +129,13 @@ class Runner:
                 N = torch.round(0.5 * (cfg.N_max + cfg.N_min) +
                                 0.5 * (cfg.N_max - cfg.N_min) * a[:, 0]
                                 ).clamp(cfg.N_min, cfg.N_max)
-                lam = (0.5 * (1 + cfg.lam_min) +
-                       0.5 * (1 - cfg.lam_min) * a[:, 1]).clamp(cfg.lam_min, 1.0)
+                if getattr(cfg, "lam_fixed", -1.0) > 0:
+                    lam = torch.full((a.shape[0],), float(cfg.lam_fixed),
+                                     device=a.device)
+                else:
+                    lam = (0.5 * (1 + cfg.lam_min) +
+                           0.5 * (1 - cfg.lam_min) * a[:, 1]).clamp(
+                               cfg.lam_min, 1.0)
                 s_hat, nu, _ = flt.step(up, z, N, lam)
             elif oracle and is_epoch and t > warm_t:
                 # buffers are (N,lam)-independent → push once via a probe step

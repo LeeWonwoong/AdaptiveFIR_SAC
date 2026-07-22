@@ -250,8 +250,8 @@ def main():
     ap.add_argument("--duration", type=float, default=None,
                     help="default: 8 s for wind (straight traverse), "
                          "15 s otherwise (square lap)")
-    ap.add_argument("--ambient-turb", type=float, default=0.2,
-                    help="ambient OU airflow std [m/s]. Manual default 0.2 "
+    ap.add_argument("--ambient-turb", type=float, default=0.3,
+                    help="ambient OU airflow std [m/s]. Manual default 0.3 "
                          "(scripted runs keep 0.5): the constant buffeting at "
                          "0.5 made hand-flying needlessly hard, and a quieter "
                          "baseline RAISES the disturbance-window contrast the "
@@ -263,7 +263,7 @@ def main():
     ap.add_argument("--hold", type=float, default=2.0,
                     help="seconds above the trigger before logging starts")
     # wind protocol (defaults = the paper's held-out row)
-    ap.add_argument("--wind-speed", type=float, default=10.0,
+    ap.add_argument("--wind-speed", type=float, default=11.5,
                     help="manual protocol: 10 m/s, low end of the v13 training "
                          "range [9,15], pilotable; scripted heldout keeps 12")
     ap.add_argument("--wind-dir", type=float, default=180.0,

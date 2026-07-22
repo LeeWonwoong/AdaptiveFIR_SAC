@@ -36,14 +36,14 @@ class VectorReplayEnv:
         if cfg.obs_channel_norms:
             assert cfg.meas_dim == self.n_rng + 6, \
                 "channel-norm obs assumes z = [UWB x4 | attitude x3 | gyro x3]"
-            self.feat = cfg.n_obs_groups + 2              # [g_uwb,g_att,g_gyr,N,lam]
+            self.feat = cfg.n_obs_groups + cfg._n_par_feat   # [+N_hat(,lam_hat)]
             # obs_group_scale may carry 3 entries (UWB, att, gyro) for backward
             # compat; when the gyro group is dropped we only keep the first
             # n_obs_groups so the width matches the 2-channel head.
             self.grp_scale = torch.tensor(
                 cfg.obs_group_scale[:cfg.n_obs_groups], device=device).view(1, -1)
         else:
-            self.feat = cfg.meas_dim + 2                  # legacy per-channel width
+            self.feat = cfg.meas_dim + cfg._n_par_feat       # legacy width
         self.fme = WeightedFME(cfg, device, self.M)
         # DI-FME 기준선 필터 (동일 측정 스트림, 고정 N/lam) — advantage 보상용
         self.ref = WeightedFME(cfg, device, self.M) if cfg.ref_monitor_N > 0 else None
@@ -72,7 +72,11 @@ class VectorReplayEnv:
     def map_action(self, a):
         cfg = self.cfg
         N = torch.round(self.N_mid + self.N_half * a[:, 0]).clamp(cfg.N_min, cfg.N_max)
-        lam = (self.l_mid + self.l_half * a[:, 1]).clamp(cfg.lam_min, 1.0)
+        if getattr(cfg, "lam_fixed", -1.0) > 0:
+            lam = torch.full((a.shape[0],), float(cfg.lam_fixed),
+                             device=a.device)
+        else:
+            lam = (self.l_mid + self.l_half * a[:, 1]).clamp(cfg.lam_min, 1.0)
         if cfg.ablation_fix_lambda:
             lam = torch.ones_like(lam)
         if cfg.ablation_fix_N:
@@ -85,6 +89,8 @@ class VectorReplayEnv:
 
     def _norm_lam(self, lam):
         cfg = self.cfg
+        if getattr(cfg, "lam_fixed", -1.0) > 0:
+            return torch.zeros_like(lam)
         return 2.0 * (lam - cfg.lam_min) / max(1.0 - cfg.lam_min, 1e-6) - 1.0
 
     # ────────────────────────────── measurement (dropout via NaN rows)
@@ -175,8 +181,10 @@ class VectorReplayEnv:
                 head = head.clamp(max=c)                  # legacy hard clip
         else:
             head = r.clamp(-c, c)                                     # legacy
-        feat = torch.cat([head, self._norm_N(N).unsqueeze(1),
-                          self._norm_lam(lam).unsqueeze(1)], dim=1)   # [M,feat]
+        cols = [head, self._norm_N(N).unsqueeze(1)]
+        if getattr(self.cfg, "lam_fixed", -1.0) <= 0:
+            cols.append(self._norm_lam(lam).unsqueeze(1))
+        feat = torch.cat(cols, dim=1)                                 # [M,feat]
         self.stack = torch.roll(self.stack, 1, dims=1)
         self.stack[:, 0] = feat
 

@@ -82,7 +82,20 @@ class Config:
     N_max: int = 20                     # ring-buffer length W (fixed shape). At the
                                         # CALIBRATED process noise q0 the nominal N_opt≈14
                                         # (DI-FME choice) sits mid-range → real headroom.
-    lam_min: float = 0.70
+    lam_min: float = 0.75   # v13.1: user retrain value (paper range [0.75, 1])
+    lam_fixed: float = -1.0  # >0 pins lambda to that CONSTANT (e.g. 0.85 =
+                             # baseline FME): the action's second dim becomes
+                             # inert and AFME adapts N ONLY. Use this if the
+                             # paper adopts the N-only formulation -- it removes
+                             # the N-lam redundancy (ESS overlap) so the wind
+                             # adaptation must appear in the horizon.
+                             # <0 keeps the joint (N, lam) action.
+    # partially REDUNDANT memory controls (ESS ~ (1+lam)/(1-lam)): with the
+    # floor at 0.7 the policy expressed the wind adaptation through lam
+    # (0.72 @ N~14 == effective ~6 epochs) and N stayed flat. Raising the
+    # floor to the baseline value forces regime shifts through the HORIZON,
+    # which is the structural story of the paper; lam refines the weighting
+    # within [0.85, 1]. Fixed-FME sweep on v13 data: wind optimum N=8.
     # ^ v11c (2026-07-16): widened from 0.75 -- in the v10 30k run the policy's
     # lambda repeatedly touched the 0.75 floor inside disturbance windows
     # (measured 0.81-0.91 usage band pressed against the clip), i.e. the bound
@@ -639,12 +652,24 @@ class Config:
     act_dim: int = 2
 
     @property
+    def _n_par_feat(self):
+        # parameter-feedback features in the observation: N_hat always;
+        # lam_hat only when lambda is a live action (lam_fixed disabled).
+        return 1 if getattr(self, "lam_fixed", -1.0) > 0 else 2
+
+    @property
     def obs_dim(self):
         if self.obs_channel_norms:
-            return (self.n_obs_groups + 2) * self.L_obs   # [g_uwb, g_att, g_gyro, N_hat, lam_hat] x L
-        return (self.meas_dim + 2) * self.L_obs      # legacy: [nu_1..nz, N_hat, lam_hat] x L
+            return (self.n_obs_groups + self._n_par_feat) * self.L_obs
+        return (self.meas_dim + self._n_par_feat) * self.L_obs
 
     def __post_init__(self):
+        if getattr(self, "lam_fixed", -1.0) > 0:
+            # N-only formulation: the network is TRULY 1-D (actor/critic
+            # dims, replay buffer, target entropy -1) and lam_hat leaves the
+            # observation. Not a masked 2-D head: an inert action dim would
+            # soak up the SAC entropy budget and let N-exploration collapse.
+            self.act_dim = 1
         assert self.N_min * self.meas_dim >= self.state_dim + 2, "N_min too small for gain existence"  # 4*10=40 >= 14 OK
         assert self.N_max >= self.N_min
         assert 0.0 < self.lam_min <= 1.0
