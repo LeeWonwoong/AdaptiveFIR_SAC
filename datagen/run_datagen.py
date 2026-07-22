@@ -300,32 +300,84 @@ class DatagenApp:
                         _cube(f"tick{i}_{int(zt * 10)}", (ax, ay, zt),
                               (0.16, 0.16, 0.015), col)
 
-            # ── cyan lap guide: square, side 4.4 m (v13: 4.0 -> 4.4) ──
+            # ── AIRBORNE 3-D reference paths (v13.1): the guide the pilot
+            # actually FLIES, drawn at altitude with the desired z profile
+            # baked in, plus ">" chevrons showing the travel direction.
+            # (Floor markings could not convey the z choreography.)
+            import math as _m
+
+            def _chevron(name, pos, yaw_deg, color, size=0.16):
+                """">"-shaped direction marker at `pos`, tip pointing
+                toward `yaw_deg` (0 = +x, CCW)."""
+                for si, off in ((1, 150.0), (2, -150.0)):
+                    ang = _m.radians(yaw_deg + off)
+                    cxy = (pos[0] + 0.5 * size * _m.cos(ang),
+                           pos[1] + 0.5 * size * _m.sin(ang), pos[2])
+                    p = UsdGeom.Cube.Define(stage, f"{root}/{name}_{si}")
+                    xf = UsdGeom.Xformable(p.GetPrim())
+                    xf.ClearXformOpOrder()
+                    xf.AddTranslateOp().Set(Gf.Vec3d(*cxy))
+                    xf.AddRotateZOp().Set(yaw_deg + off)
+                    xf.AddScaleOp().Set(Gf.Vec3f(0.5 * size, 0.022, 0.022))
+                    p.GetDisplayColorAttr().Set([Gf.Vec3f(*color)])
+
+            def _dotted_path(name, pts, color, half=0.035):
+                for k, q in enumerate(pts):
+                    _cube(f"{name}_{k:03d}", tuple(q), (half, half, half), color)
+
+            # ① lap path (mass / nominal): 4.4 m square at altitude, CCW from
+            #   the SW corner, with the z choreography built in:
+            #     side 1 (S, +x): climb 1.5 -> 1.9   (be HIGH before pickup)
+            #     side 2 (E, +y): hold 1.9           (6 s pickup lands here)
+            #     side 3 (N, -x): descend 1.9 -> 1.5
+            #     side 4 (W, -y): hold 1.5
             margin = 1.8
             wx0, wx1 = x0 + margin, x1 - margin
             wy0, wy1 = y0 + margin, y1 - margin
-            wcx, wcy = 0.5 * (wx0 + wx1), 0.5 * (wy0 + wy1)
-            cyan, zg = (0.15, 0.65, 1.00), 0.035
-            _cube("lap_ymin", (wcx, wy0, zg), ((wx1 - wx0) / 2 + t, t, 0.02), cyan)
-            _cube("lap_ymax", (wcx, wy1, zg), ((wx1 - wx0) / 2 + t, t, 0.02), cyan)
-            _cube("lap_xmin", (wx0, wcy, zg), (t, (wy1 - wy0) / 2 + t, 0.02), cyan)
-            _cube("lap_xmax", (wx1, wcy, zg), (t, (wy1 - wy0) / 2 + t, 0.02), cyan)
-            for j, (px, py) in enumerate([(wx0, wy0), (wx1, wy0),
-                                          (wx1, wy1), (wx0, wy1)]):
-                _cube(f"lap_corner{j}", (px, py, 0.10), (0.12, 0.12, 0.10),
-                      (1.0, 1.0, 1.0) if j == 0 else cyan)
+            cyan = (0.15, 0.65, 1.00)
+            side = wx1 - wx0
+            npt = 12                              # dots per side
+            lap = []
+            for k in range(npt):                  # S side: climb
+                s = k / npt
+                lap.append((wx0 + s * side, wy0, 1.5 + 0.4 * s))
+            for k in range(npt):                  # E side: hold high
+                lap.append((wx1, wy0 + (k / npt) * side, 1.9))
+            for k in range(npt):                  # N side: descend
+                s = k / npt
+                lap.append((wx1 - s * side, wy1, 1.9 - 0.4 * s))
+            for k in range(npt):                  # W side: hold low
+                lap.append((wx0, wy1 - (k / npt) * side, 1.5))
+            _dotted_path("lap3d", lap, cyan)
+            _cube("lap_startpuck", (wx0, wy0, 1.5), (0.10, 0.10, 0.10),
+                  (1.0, 1.0, 1.0))                # white = START (SW corner)
+            wmid = 0.5 * (wx0 + wx1)
+            for nm, pos, yaw in (
+                    ("lapdir_s", (wmid, wy0, 1.72), 0.0),
+                    ("lapdir_e", (wx1, 0.5 * (wy0 + wy1), 1.9), 90.0),
+                    ("lapdir_n", (wmid, wy1, 1.68), 180.0),
+                    ("lapdir_w", (wx0, 0.5 * (wy0 + wy1), 1.5), 270.0)):
+                _chevron(nm, pos, yaw, cyan)
 
-            # ── magenta centre line: 5 m wind traverse along x at y = cy ──
+            # ② wind path: 5 m straight traverse at y = cy, east -> west
+            #   (with dir=180 deg the gust pushes -x: downwind leg, no lateral
+            #   correction), one gentle z arch 1.6 -> 2.0 -> 1.5 -> 1.7 so the
+            #   vertical channel is exercised too.
             lx0, lx1 = cx - 2.5, cx + 2.5
             mag = (1.00, 0.25, 0.85)
-            _cube("wind_line", (cx, cy, 0.045),
-                  ((lx1 - lx0) / 2, 0.05, 0.02), mag)
-            for k in range(1, 5):                       # 1 m tick marks
-                _cube(f"wind_tick{k}", (lx0 + k, cy, 0.05),
-                      (0.03, 0.22, 0.02), mag)
-            _cube("wind_start", (lx1, cy, 0.11), (0.14, 0.14, 0.11),
-                  (1.0, 1.0, 1.0))                      # upwind END = START
-            _cube("wind_end", (lx0, cy, 0.11), (0.12, 0.12, 0.10), mag)
+            nwp = 22
+            wpath = []
+            for k in range(nwp + 1):
+                s = k / nwp                       # 0 = east start, 1 = west end
+                xw = lx1 - 5.0 * s
+                zw = 1.7 + 0.3 * _m.sin(2 * _m.pi * s) - 0.1 * s
+                wpath.append((xw, cy, zw))
+            _dotted_path("wind3d", wpath, mag)
+            _cube("wind_startpuck", (lx1, cy, wpath[0][2]),
+                  (0.11, 0.11, 0.11), (1.0, 1.0, 1.0))   # white = START (east)
+            for kf in (0.25, 0.5, 0.75):
+                q = wpath[int(kf * nwp)]
+                _chevron(f"winddir_{int(kf * 100)}", q, 180.0, mag)
 
             # ── tilted overview camera ──
             import math as _math

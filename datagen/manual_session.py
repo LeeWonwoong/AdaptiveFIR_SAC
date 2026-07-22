@@ -250,7 +250,12 @@ def main():
     ap.add_argument("--duration", type=float, default=None,
                     help="default: 8 s for wind (straight traverse), "
                          "15 s otherwise (square lap)")
-    ap.add_argument("--ambient-turb", type=float, default=0.5)
+    ap.add_argument("--ambient-turb", type=float, default=0.2,
+                    help="ambient OU airflow std [m/s]. Manual default 0.2 "
+                         "(scripted runs keep 0.5): the constant buffeting at "
+                         "0.5 made hand-flying needlessly hard, and a quieter "
+                         "baseline RAISES the disturbance-window contrast the "
+                         "policy keys on. Note the deviation in the paper.")
     # start trigger
     ap.add_argument("--start", choices=["auto", "enter"], default="auto")
     ap.add_argument("--alt-trigger", type=float, default=0.5,
@@ -270,7 +275,7 @@ def main():
     # mass protocol (defaults = the paper's held-out row)
     ap.add_argument("--mass-delta", type=float, default=0.70)
     ap.add_argument("--mass-onset", type=float, default=6.0)
-    ap.add_argument("--mass-duration", type=float, default=5.0)
+    ap.add_argument("--mass-duration", type=float, default=3.0)
     ap.add_argument("--com-offset", type=float, default=0.04)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--shutdown-engine", action="store_true",
@@ -285,7 +290,7 @@ def main():
     if a.duration is None:
         a.duration = 8.0 if a.mode == "wind" else 15.0
     if a.windows is None:
-        a.windows = "3.5:3" if a.mode == "wind" else "6:5"
+        a.windows = "4:2" if a.mode == "wind" else "6:3"
 
     rclpy.init()
     node = ManualSession(a)
