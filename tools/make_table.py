@@ -11,8 +11,9 @@ Emit the LaTeX RMSE table for one seed (same numbers as tools/eval_seeds.py).
 import argparse
 import numpy as np
 
-from _common import (load_cfg, scenario_index, make_dataset, make_runner,
-                     load_agent, run_all, eval_slice, rmse3, METHODS,
+from _common import (load_cfg, scenario_index, make_dataset,
+                     load_agent, run_all_seeded, default_method_seeds,
+                     SEED, eval_slice, rmse3, METHODS,
                      EVAL_T0, EVAL_T1, Q_EKF, Q_UKF, Q_EKF_DIST, Q_UKF_DIST,
                      R_EKF, R_UKF, R_EKF_DIST, R_UKF_DIST, FME_N)
 
@@ -29,7 +30,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", required=True)
     ap.add_argument("--ckpt", required=True)
-    ap.add_argument("--seed", type=int, default=13)
+    ap.add_argument("--seed", type=int, default=SEED)
+    # per-method noise-seed overrides (same convention as make_figs.py);
+    # a method without an override uses the SEED_* constant from
+    # tools/_common.py, then --seed.
+    ap.add_argument("--seed-ekf", type=int, default=None)
+    ap.add_argument("--seed-ukf", type=int, default=None)
+    ap.add_argument("--seed-fme", type=int, default=None)
+    ap.add_argument("--seed-afme", type=int, default=None)
     ap.add_argument("--out", default=None)
     ap.add_argument("--per-axis", action="store_true")
     ap.add_argument("--q-ekf", "--q-ekf-nom", dest="q_ekf",
@@ -55,15 +63,21 @@ def main():
     cfg = load_cfg(a.data_dir)
     scen = scenario_index(cfg)
     ds, M = make_dataset(cfg, a.device)
-    run = make_runner(cfg, ds, a.device, a.seed)
     agent = load_agent(cfg, a.ckpt, a.device)
-    res = run_all(run, cfg, a.device, M, agent,
-                  q_ekf=a.q_ekf, q_ukf=a.q_ukf,
-                  r_ekf=a.r_ekf, r_ukf=a.r_ukf, fme_N=a.fme_n,
-                  q_ekf_dist=a.q_ekf_dist if split_q else None,
-                  q_ukf_dist=a.q_ukf_dist if split_q else None,
-                  r_ekf_dist=a.r_ekf_dist if split_q else None,
-                  r_ukf_dist=a.r_ukf_dist if split_q else None)
+    # seed precedence: --seed-<m> CLI flag > SEED_<M> in _common.py > --seed
+    method_seeds = default_method_seeds()
+    method_seeds.update({m: s for m, s in
+                         [("EKF", a.seed_ekf), ("UKF", a.seed_ukf),
+                          ("FME", a.seed_fme), ("AFME", a.seed_afme)]
+                         if s is not None})
+    res = run_all_seeded(cfg, ds, a.device, M, agent,
+                         seed=a.seed, method_seeds=method_seeds,
+                         q_ekf=a.q_ekf, q_ukf=a.q_ukf,
+                         r_ekf=a.r_ekf, r_ukf=a.r_ukf, fme_N=a.fme_n,
+                         q_ekf_dist=a.q_ekf_dist if split_q else None,
+                         q_ukf_dist=a.q_ukf_dist if split_q else None,
+                         r_ekf_dist=a.r_ekf_dist if split_q else None,
+                         r_ukf_dist=a.r_ukf_dist if split_q else None)
     sl = eval_slice(cfg, ds.T)
 
     def evec_for(m, scenario):
@@ -111,6 +125,9 @@ def main():
         r"\hline", r"\end{tabular}", r"\end{table}"])
 
     print(tex)
+    if method_seeds:
+        print("% seeds: " + " ".join(
+            f"{m}={method_seeds.get(m, a.seed)}" for m in METHODS))
 
     if a.per_axis:
         print("\n% per-axis breakdown (x / y / z)")

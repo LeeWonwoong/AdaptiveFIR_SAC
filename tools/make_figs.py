@@ -14,6 +14,8 @@ The shared x-axis makes the disturbance shading line up across the panels.
 Curves are the RMS across the three flight patterns of the scenario, shown as
 a centred moving RMS (--smooth, default 1.5 s).  The x-range equals the RMSE
 evaluation window (2-40 s), so figures and table describe the same interval.
+Set FIG_PATTERN in tools/_common.py (or pass --fig-pattern helical/figure8/
+waypoint) to draw ONE representative pattern instead of the all-pattern RMS.
 
   python3 tools/make_figs.py --data_dir data_isaac_v12 \
       --ckpt results/v12_50k/ckpt.pt --seed 13 --outdir figures/
@@ -31,8 +33,10 @@ plt.rcParams.update({
     "lines.linewidth": 0.9, "pdf.fonttype": 42,
 })
 
-from _common import (load_cfg, scenario_index, make_dataset, make_runner,
-                     load_agent, run_all, eval_slice, err_norm, moving_rms,
+from _common import (load_cfg, scenario_index, make_dataset,
+                     load_agent, run_all_seeded, default_method_seeds,
+                     SEED, FIG_PATTERN, select_pattern,
+                     eval_slice, err_norm, moving_rms,
                      moving_avg, METHODS,
                      COLORS, EVAL_T0, EVAL_T1,
                      WIND_WINDOWS, PAYLOAD_WINDOWS, Q_EKF, Q_UKF,
@@ -69,7 +73,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", required=True)
     ap.add_argument("--ckpt", required=True)
-    ap.add_argument("--seed", type=int, default=13)
+    ap.add_argument("--seed", type=int, default=SEED)
+    # per-method noise-seed overrides; a method without an override uses the
+    # SEED_* constant from tools/_common.py, then --seed. Methods sharing a
+    # seed still share ONE measurement stream.
+    ap.add_argument("--seed-ekf", type=int, default=None)
+    ap.add_argument("--seed-ukf", type=int, default=None)
+    ap.add_argument("--seed-fme", type=int, default=None)
+    ap.add_argument("--seed-afme", type=int, default=None)
     ap.add_argument("--no-lam", action="store_true",
                     help="fig3 = N panel only (use with the lam-fixed "
                          "N-only formulation, where the lambda trace is a "
@@ -77,8 +88,25 @@ def main():
     ap.add_argument("--avg-seeds", dest="avg_seeds", default="",
                     help='e.g. "1-20": draw Monte-Carlo averaged curves '
                          "(paired streams within each seed are unchanged)")
+    ap.add_argument("--fig-pattern", default=FIG_PATTERN,
+                    choices=["helical", "figure8", "waypoint"],
+                    help="draw ONE representative flight pattern instead of "
+                         "the RMS across all three (default: FIG_PATTERN "
+                         "in tools/_common.py)")
+    ap.add_argument("--pattern-sweep", action="store_true",
+                    help="write every variant instead of just --fig-pattern: "
+                         "fig{2,3}_<scen>_all (3-pattern RMS) plus "
+                         "_helical/_figure8/_waypoint; the filter rollouts "
+                         "run only once")
     ap.add_argument("--outdir", default="figures")
     ap.add_argument("--smooth", type=float, default=1.5)
+    ap.add_argument("--adapt-smooth", type=float, default=0.3,
+                    help="moving-average window [s] for the N_k/lambda_k "
+                         "traces in fig3")
+    ap.add_argument("--raw-alpha", type=float, default=0.0,
+                    help="opacity of the raw per-step N_k/lambda_k trace "
+                         "drawn behind the smoothed line (0 = off; e.g. "
+                         "0.3 with --adapt-smooth 0.8 for a raw underlay)")
     ap.add_argument("--wind-label", default="sustained wind",
                     help="text drawn inside the wind shading ('' to disable)")
     ap.add_argument("--payload-label", default="payload attached",
@@ -139,21 +167,30 @@ def main():
     # realization-specific wiggle from the DISPLAYED curves, the standard MC
     # presentation in the filtering literature. evec entries are replaced by
     # sqrt(mean over seeds of squared error) per step; N/lam are averaged.
+    # seed precedence: --seed-<m> CLI flag > SEED_<M> in _common.py > --seed
+    method_seeds = default_method_seeds()
+    method_seeds.update({m: s for m, s in
+                         [("EKF", a.seed_ekf), ("UKF", a.seed_ukf),
+                          ("FME", a.seed_fme), ("AFME", a.seed_afme)]
+                         if s is not None})
     if a.avg_seeds:
+        if method_seeds:
+            ap.error("--seed-ekf/--seed-ukf/--seed-fme/--seed-afme are "
+                     "single-seed options; drop --avg-seeds to use them")
         lo, hi = (int(x) for x in a.avg_seeds.split("-"))
         seeds = list(range(lo, hi + 1))
     else:
         seeds = [a.seed]
     res = None
     for si, sd in enumerate(seeds):
-        run = make_runner(cfg, ds, a.device, sd)
-        r1 = run_all(run, cfg, a.device, M, agent,
-                     q_ekf=a.q_ekf, q_ukf=a.q_ukf,
-                     r_ekf=a.r_ekf, r_ukf=a.r_ukf, fme_N=a.fme_n,
-                     q_ekf_dist=a.q_ekf_dist if split_q else None,
-                     q_ukf_dist=a.q_ukf_dist if split_q else None,
-                     r_ekf_dist=a.r_ekf_dist if split_q else None,
-                     r_ukf_dist=a.r_ukf_dist if split_q else None)
+        r1 = run_all_seeded(cfg, ds, a.device, M, agent,
+                            seed=sd, method_seeds=method_seeds,
+                            q_ekf=a.q_ekf, q_ukf=a.q_ukf,
+                            r_ekf=a.r_ekf, r_ukf=a.r_ukf, fme_N=a.fme_n,
+                            q_ekf_dist=a.q_ekf_dist if split_q else None,
+                            q_ukf_dist=a.q_ukf_dist if split_q else None,
+                            r_ekf_dist=a.r_ekf_dist if split_q else None,
+                            r_ukf_dist=a.r_ukf_dist if split_q else None)
         if res is None:
             res = {m: {k: (np.asarray(v, dtype=float) ** 2
                            if k.startswith("evec") else
@@ -210,7 +247,20 @@ def main():
     tk = np.arange(ds.T)                     # x-axis: time step k
     kticks = [500, 1000, 1500, 2000]
     N, L = res["AFME"]["N"], res["AFME"]["lam"]
-    for key, title, idx, wins, shade in cases:
+    # --pattern-sweep: same rollouts, but the plot loop below runs once per
+    # (pattern, suffix) variant; (None, "_all") is the 3-pattern RMS.
+    if a.pattern_sweep:
+        pat_list = [(None, "_all"), ("helical", "_helical"),
+                    ("figure8", "_figure8"), ("waypoint", "_waypoint")]
+    else:
+        pat_list = [(a.fig_pattern, "")]
+    for (pat, sfx), (key, title, idx, wins, shade) in (
+            (p, c) for p in pat_list for c in cases):
+        # --fig-pattern: one representative trajectory instead of the
+        # all-pattern RMS (idx then has a single element, mean(0) is a no-op)
+        idx = select_pattern(cfg, idx, pat)
+        if a.pattern_sweep:            # self-describing titles in sweep mode
+            title = f"{title} – {pat or 'all-pattern RMS'}"
         wins_k = [(s0 / cfg.dt, s1 / cfg.dt) for (s0, s1) in wins]
         _lab, _sz = labels[key]
 
@@ -241,7 +291,7 @@ def main():
                   columnspacing=1.0, handlelength=1.6, handletextpad=0.4)
         fig.suptitle(title, y=1.16, fontsize=11)
         for ext in ("pdf", "png"):
-            fig.savefig(os.path.join(a.outdir, f"fig2_{key}.{ext}"),
+            fig.savefig(os.path.join(a.outdir, f"fig2_{key}{sfx}.{ext}"),
                         bbox_inches="tight", dpi=150)
         plt.close(fig)
 
@@ -254,19 +304,32 @@ def main():
             ax = [ax]
         _bt = __import__('matplotlib.transforms',
                          fromlist=['x']).blended_transform_factory
-        nc = moving_avg(N[idx].mean(0), cfg, 0.3)
-        ax[0].plot(tk, nc, "-", color="k", lw=1.3)
+        nraw = N[idx].mean(0)
+        nc = moving_avg(nraw, cfg, a.adapt_smooth)
+        if a.raw_alpha > 0:      # raw per-step trace as a faint underlay
+            ax[0].plot(tk, nraw, "-", color="k", lw=0.6,
+                       alpha=a.raw_alpha, zorder=1)
+        ax[0].plot(tk, nc, "-", color="k", lw=1.3, zorder=2)
         ax[0].axhline(a.fme_n, ls="--", color=COLORS["FME"], lw=0.9)
         ax[0].text(0.995, a.fme_n, f"FME $N{{=}}{a.fme_n}$",
                    transform=_bt(ax[0].transAxes, ax[0].transData),
                    ha="right", va="bottom", fontsize=6.5, color=COLORS["FME"])
         ax[0].set_ylabel(r"$N_k$")
-        nlo, nhi = nc[k0:k1].min(), max(nc[k0:k1].max(), a.fme_n)
+        # y-range from the raw trace when it is visible, so it isn't clipped
+        nb = nraw if a.raw_alpha > 0 else nc
+        nlo, nhi = nb[k0:k1].min(), max(nb[k0:k1].max(), a.fme_n)
         ax[0].set_ylim(max(cfg.N_min - 2, nlo - 2), min(cfg.N_max, nhi + 2))
+        # N is a window length -> integer ticks only (no 7.5 / 12.5 labels)
+        from matplotlib.ticker import MaxNLocator
+        ax[0].yaxis.set_major_locator(MaxNLocator(integer=True))
 
         if not a.no_lam:
-            ax[1].plot(tk, moving_avg(L[idx].mean(0), cfg, 0.3), "-",
-                       color="k", lw=1.3)
+            lraw = L[idx].mean(0)
+            if a.raw_alpha > 0:
+                ax[1].plot(tk, lraw, "-", color="k", lw=0.6,
+                           alpha=a.raw_alpha, zorder=1)
+            ax[1].plot(tk, moving_avg(lraw, cfg, a.adapt_smooth), "-",
+                       color="k", lw=1.3, zorder=2)
         if not a.no_lam:
             ax[1].axhline(FME_LAM, ls="--", color=COLORS["FME"], lw=0.9)
         if not a.no_lam:
@@ -288,7 +351,7 @@ def main():
         _annotate(ax[0], wins_k, _lab, a.label_color, _sz, a.label_y)
         ax[0].set_title(title, fontsize=11, pad=6)
         for ext in ("pdf", "png"):
-            fig.savefig(os.path.join(a.outdir, f"fig3_{key}.{ext}"),
+            fig.savefig(os.path.join(a.outdir, f"fig3_{key}{sfx}.{ext}"),
                         bbox_inches="tight", dpi=150)
         plt.close(fig)
 
@@ -298,12 +361,23 @@ def main():
              " (nominal/disturb)" if split_q
              else f"Q_EKF={a.q_ekf:g} Q_UKF={a.q_ukf:g} "
                   f"R_EKF={a.r_ekf:g} R_UKF={a.r_ukf:g}")
-    print(f"wrote 4 figures to {outabs} "
-          f"(seed {a.seed}, {a.smooth:g}s moving RMS, "
+    if method_seeds:
+        snote = "seeds " + " ".join(
+            f"{m}={method_seeds.get(m, a.seed)}" for m in METHODS)
+    else:
+        snote = f"seed {a.seed}"
+    pnote = ("pattern sweep (all/helical/figure8/waypoint)" if a.pattern_sweep
+             else f"pattern {a.fig_pattern}" if a.fig_pattern
+             else "all-pattern RMS")
+    nfig = 4 * len(pat_list)
+    print(f"wrote {nfig} figures to {outabs} "
+          f"({snote}, {pnote}, {a.smooth:g}s moving RMS, "
+          f"{a.adapt_smooth:g}s N/lam avg + raw alpha {a.raw_alpha:g}, "
           f"filters: {', '.join(methods)}, {qnote})")
-    for key in ("wind", "payload"):
-        for pfx in ("fig2", "fig3"):
-            print(f"  {os.path.join(outabs, f'{pfx}_{key}.png')}")
+    for _pat, sfx in pat_list:
+        for key in ("wind", "payload"):
+            for pfx in ("fig2", "fig3"):
+                print(f"  {os.path.join(outabs, f'{pfx}_{key}{sfx}.png')}")
 
 
 if __name__ == "__main__":

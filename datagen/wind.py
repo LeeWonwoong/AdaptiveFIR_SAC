@@ -31,8 +31,32 @@ class WindModel:
                 if _in:
                     d = np.array([np.cos(_su["dir_rad"]),
                                   np.sin(_su["dir_rad"]), 0.0])
-                    w += _su["speed"] * d
-                    w[2] += _su["speed"] * float(_su.get("vert_ratio", 0.0))
+                    # ── v15 gust profile: 1-cosine ramp in/out + slow bounded
+                    #    modulation around the mean (MIL-F-8785C-style discrete
+                    #    gust). All fields default to the LEGACY constant
+                    #    profile so old metas replay bit-identically.
+                    spd = _su["speed"]
+                    if "start_s" in _su:
+                        _t0 = _su["start_s"]; _du = _su["duration_s"]
+                        _rp = float(_su.get("ramp_s", 0.0))
+                        env = 1.0
+                        if _rp > 1e-6:
+                            _tt = t - _t0
+                            if _tt < _rp:
+                                env = 0.5 * (1 - np.cos(np.pi * _tt / _rp))
+                            elif _tt > _du - _rp:
+                                env = 0.5 * (1 - np.cos(
+                                    np.pi * (_du - _tt) / _rp))
+                        _am = float(_su.get("mod_amp", 0.0))
+                        mod = 1.0
+                        if _am > 1e-6:
+                            _pe = float(_su.get("mod_period", 3.0))
+                            _ph = float(_su.get("mod_phase", 0.0))
+                            mod = 1.0 + _am * np.sin(
+                                2 * np.pi * (t - _t0) / _pe + _ph)
+                        spd = spd * env * mod
+                    w += spd * d
+                    w[2] += spd * float(_su.get("vert_ratio", 0.0))
                     break        # windows are non-overlapping; one active max
         for g in self.sc.get("gusts", []):
             if g["start_s"] <= t <= g["start_s"] + g["duration_s"]:

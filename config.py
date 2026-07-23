@@ -450,7 +450,18 @@ class Config:
     # N shrink -> offset -> N recover, twice per trajectory.
     sustained_onset_frac: tuple = (0.20, 0.50)   # window start within trajectory
     sustained_duration_range: tuple = (8.0, 15.0)  # s (>= validated ~7 s window)
-    sustained_speed_range: tuple = (9.0, 15.0)
+    sustained_speed_range: tuple = (10.0, 14.0)
+    # v15 gust profile: 1-cosine edge ramps + slow bounded modulation of the
+    # in-window speed (MIL-F-8785C-style discrete gust). Slow (period >>
+    # adaptation response) and bounded (<=30%) so the mean drag bias -- the
+    # signal the horizon adapts to -- is preserved, while the time variation
+    # gives the co-adapted forgetting factor a distinct graded-weighting role.
+    sustained_mod_amp_range: tuple = (0.15, 0.30)
+    sustained_mod_period_range: tuple = (2.0, 5.0)
+    sustained_ramp_range: tuple = (1.0, 2.0)
+    heldout_mod_amp: float = 0.22
+    heldout_mod_period: float = 3.0
+    heldout_ramp_s: float = 1.5
     # ^ v13: 9-15 so the 12 m/s held-out row sits at the CENTER of the
     #   training range. Wind is applied PHYSICALLY in Isaac -> regenerate the
     #   training split before retraining.

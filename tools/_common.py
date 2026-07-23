@@ -29,30 +29,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ----------------------------------------------------------------- defaults
 EVAL_T0 = 2.0            # s -- start of the RMSE window
 EVAL_T1 = 40.0           # s -- end of the RMSE window (== figure x-limit)
+# Noise seeds -- THIS module is the single source of truth, exactly like the
+# baseline (Q,R) tuning below. SEED is the default noise seed of the
+# single-seed tools (make_figs / make_table); the SEED_* overrides give one
+# method its OWN measurement-noise realisation (None = use SEED). The CLI
+# flags (--seed / --seed-ekf ...) still win over these constants.
+SEED = 12
+SEED_EKF = 1         # per-method overrides; None -> SEED (paired stream)
+SEED_UKF = 2
+SEED_FME = 2
+SEED_AFME = 2
 # Baseline tuning -- THIS module is the single source of truth; evaluate.py
 # imports these constants so the online-play run and every tools/ analysis use
 # the SAME baseline configuration.
 Q_EKF = 1.5e-3           # nominal grid optimum, see tools/sweep_tuning.py
 Q_UKF = 5e-3             # nominal grid optimum (same value, independently found)
-Q_EKF_DIST = 4e-3        # EKF process noise under disturbance (wind/payload)
-Q_UKF_DIST = 5e-3        # UKF process noise under disturbance (wind/payload)
-# Measurement-noise (R) tuning: a scalar multiplier on the datasheet meas_sigma
-# (std). 1.0 = datasheet R; >1 trusts the sensors less, <1 more. Split into the
-# nominal and disturbance regimes exactly like Q, so a caller can widen R only
-# while a gust / payload is acting. The UKF keeps its extra UWB-block trust
-# factor UKF_R_UWB_SCALE on top of this overall scale.
+Q_EKF_DIST = 5e-3        # EKF process noise under disturbance (wind/payload)
+Q_UKF_DIST = 6e-3        # UKF process noise under disturbance (wind/payload)
 
 R_EKF = 1.2             # EKF meas-noise scale x meas_sigma (nominal)
 R_UKF = 0.9              # UKF meas-noise scale x meas_sigma (nominal)
 R_EKF_DIST = 1.2        # EKF meas-noise scale under disturbance (wind/payload)
 R_UKF_DIST = 0.9         # UKF meas-noise scale under disturbance (wind/payload)
 
-UKF_ALPHA = 0.7         # standard range 0 < alpha <= 1
+UKF_ALPHA = 0.3         # standard range 0 < alpha <= 1
 UKF_BETA = 2.0
 UKF_KAPPA = 0.0
 UKF_R_UWB_SCALE = 1.2   # UKF's own grid optimum on the UWB block of R
-FME_N = 12               # fixed-horizon baseline (nominal grid optimum)
-FME_LAM = 0.85
+FME_N = 11               # fixed-horizon baseline (nominal grid optimum)
+FME_LAM = 0.9
 
 # disturbance windows of the held-out set, (start_s, end_s)
 WIND_WINDOWS = [(6.0, 16.0), (26.0, 36.0)]
@@ -61,6 +66,13 @@ PAYLOAD_WINDOWS = [(15.0, 33.0)]
 COLORS = {"EKF": "#d62728", "UKF": "#ff7f0e",
           "FME": "#1f77b4", "AFME": "#2ca02c"}
 METHODS = ["EKF", "UKF", "FME", "AFME"]
+
+# Figure pattern selection -- the time-series figures (make_figs) normally
+# draw the RMS across the three flight patterns of a scenario. Set this to
+# one pattern name ("helical" / "figure8" / "waypoint") to draw that single
+# representative trajectory instead; None keeps the all-pattern RMS.
+# The CLI flag (--fig-pattern) still wins over this constant.
+FIG_PATTERN = "None"
 
 
 # ------------------------------------------------------------------ set-up
@@ -86,6 +98,23 @@ def scenario_index(cfg):
         key = alias.get(row[0], row[0])
         out.setdefault(key, []).append(i)
     return out
+
+
+def select_pattern(cfg, idx, pattern):
+    """Restrict scenario indices `idx` to one named flight pattern.
+
+    `pattern` is the heldout_plan extra["pattern"] name ("helical",
+    "figure8", "waypoint"); falsy -> `idx` unchanged (all-pattern RMS).
+    """
+    if not pattern:
+        return list(idx)
+    sel = [i for i in idx
+           if cfg.heldout_plan[i][4].get("pattern") == pattern]
+    if not sel:
+        have = sorted({cfg.heldout_plan[i][4].get("pattern") for i in idx})
+        raise ValueError(f"pattern {pattern!r} not in scenario "
+                         f"(available: {', '.join(have)})")
+    return sel
 
 
 def make_dataset(cfg, dev="cpu"):
@@ -181,6 +210,36 @@ def run_all(run, cfg, dev, M, agent=None,
     if "FME" not in skip:
         _, _, _, ev = run.run(make_fme(cfg, dev, M, fme_N))
         res["FME"] = dict(evec=ev, N=None, lam=None)
+    return res
+
+
+def default_method_seeds():
+    """The SEED_* constants above as {method: seed}, overrides only."""
+    return {m: s for m, s in
+            [("EKF", SEED_EKF), ("UKF", SEED_UKF),
+             ("FME", SEED_FME), ("AFME", SEED_AFME)] if s is not None}
+
+
+def run_all_seeded(cfg, ds, dev, M, agent=None, seed=SEED, method_seeds=None,
+                   **kw):
+    """run_all(), but each filter may use its OWN noise seed.
+
+    `method_seeds` maps {"EKF": s, ...}; methods not listed fall back to
+    `seed`.  When None (default) the module-level SEED_* constants are used.
+    Methods sharing a seed share ONE Runner, i.e. the same measurement-noise
+    realisation (the paired-comparison convention is kept); methods with
+    distinct seeds see distinct noise streams.
+    """
+    if method_seeds is None:
+        method_seeds = default_method_seeds()
+    groups = {}
+    for m in METHODS:
+        groups.setdefault(int(method_seeds.get(m, seed)), []).append(m)
+    res = {}
+    for sd in sorted(groups):
+        run = make_runner(cfg, ds, dev, sd)
+        skip = tuple(m for m in METHODS if m not in groups[sd])
+        res.update(run_all(run, cfg, dev, M, agent, skip=skip, **kw))
     return res
 
 

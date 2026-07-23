@@ -192,15 +192,31 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
         _vert = float(rng.uniform(*_vr)) if _vr else 0.0
         _nw = int(getattr(cfg, "wind_n_windows", 1))
         _spd = float(rng.uniform(*_sr)); _dir = float(rng.uniform(0, 2 * np.pi))
+        # v15 gust profile params (1-cosine ramp + slow bounded modulation).
+        # Heldout uses the deterministic center values via _plan_row/_plan_win.
+        _ma = float(rng.uniform(*getattr(cfg, "sustained_mod_amp_range",
+                                         (0.15, 0.30))))
+        _mp = float(rng.uniform(*getattr(cfg, "sustained_mod_period_range",
+                                         (2.0, 5.0))))
+        _mh = float(rng.uniform(0, 2 * np.pi))
+        _rs = float(rng.uniform(*getattr(cfg, "sustained_ramp_range",
+                                         (1.0, 2.0))))
+        if _plan_win:            # deterministic heldout: fixed profile
+            _ma = float(getattr(cfg, "heldout_mod_amp", 0.22))
+            _mp = float(getattr(cfg, "heldout_mod_period", 3.0))
+            _mh = 0.0
+            _rs = float(getattr(cfg, "heldout_ramp_s", 1.5))
+        _prof = {"mod_amp": _ma, "mod_period": _mp,
+                 "mod_phase": _mh, "ramp_s": _rs}
         if _plan_win:                              # explicit paper windows
             sc["sustained"] = [
                 {"speed": _spd, "vert_ratio": _vert, "dir_rad": _dir,
-                 "start_s": float(_w[0]), "duration_s": float(_w[1])}
+                 "start_s": float(_w[0]), "duration_s": float(_w[1]), **_prof}
                 for _w in _plan_win]
         elif _nw <= 1:
             sc["sustained"] = {"speed": _spd, "vert_ratio": _vert,
                                "dir_rad": _dir,
-                               "start_s": _s0, "duration_s": _sd}
+                               "start_s": _s0, "duration_s": _sd, **_prof}
         else:
             # N non-overlapping windows spread across the trajectory, each with
             # the SAME wind vector, gap >= 6 s. Slots split [0.10, 0.92]*dur.
@@ -215,7 +231,7 @@ def sample_scenario(cfg, rng: np.random.Generator, heldout: bool = False,
                 _st = float(rng.uniform(_base, _base + _slot - _d))
                 _wins.append({"speed": _spd, "vert_ratio": _vert,
                               "dir_rad": _dir,
-                              "start_s": _st, "duration_s": _d})
+                              "start_s": _st, "duration_s": _d, **_prof})
             sc["sustained"] = _wins        # LIST of windows
     elif stype == "anchor_dropout":
         sc["dropouts"] = _dropouts()
