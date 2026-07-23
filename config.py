@@ -82,8 +82,8 @@ class Config:
     N_max: int = 20                     # ring-buffer length W (fixed shape). At the
                                         # CALIBRATED process noise q0 the nominal N_opt≈14
                                         # (DI-FME choice) sits mid-range → real headroom.
-    lam_min: float = 0.75   # v13.1: user retrain value (paper range [0.75, 1])
-    lam_fixed: float = 0.85  # >0 pins lambda to that CONSTANT (e.g. 0.85 =
+    lam_min: float = 0.85   # v13.1: user retrain value (paper range [0.75, 1])
+    lam_fixed: float = -1.0  # >0 pins lambda to that CONSTANT (e.g. 0.85 =
                              # baseline FME): the action's second dim becomes
                              # inert and AFME adapts N ONLY. Use this if the
                              # paper adopts the N-only formulation -- it removes
