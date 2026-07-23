@@ -70,6 +70,13 @@ def main():
     ap.add_argument("--data_dir", required=True)
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--seed", type=int, default=13)
+    ap.add_argument("--no-lam", action="store_true",
+                    help="fig3 = N panel only (use with the lam-fixed "
+                         "N-only formulation, where the lambda trace is a "
+                         "constant line)")
+    ap.add_argument("--avg-seeds", dest="avg_seeds", default="",
+                    help='e.g. "1-20": draw Monte-Carlo averaged curves '
+                         "(paired streams within each seed are unchanged)")
     ap.add_argument("--outdir", default="figures")
     ap.add_argument("--smooth", type=float, default=1.5)
     ap.add_argument("--wind-label", default="sustained wind",
@@ -124,15 +131,48 @@ def main():
     cfg = load_cfg(a.data_dir)
     scen = scenario_index(cfg)
     ds, M = make_dataset(cfg, a.device)
-    run = make_runner(cfg, ds, a.device, a.seed)
     agent = load_agent(cfg, a.ckpt, a.device)
-    res = run_all(run, cfg, a.device, M, agent,
-                  q_ekf=a.q_ekf, q_ukf=a.q_ukf,
-                  r_ekf=a.r_ekf, r_ukf=a.r_ukf, fme_N=a.fme_n,
-                  q_ekf_dist=a.q_ekf_dist if split_q else None,
-                  q_ukf_dist=a.q_ukf_dist if split_q else None,
-                  r_ekf_dist=a.r_ekf_dist if split_q else None,
-                  r_ukf_dist=a.r_ukf_dist if split_q else None)
+
+    # --avg-seeds "1-20": Monte-Carlo averaged curves. Evaluation methodology
+    # is unchanged (within each seed all filters share ONE measurement
+    # stream = paired comparison); averaging across seeds only removes the
+    # realization-specific wiggle from the DISPLAYED curves, the standard MC
+    # presentation in the filtering literature. evec entries are replaced by
+    # sqrt(mean over seeds of squared error) per step; N/lam are averaged.
+    if a.avg_seeds:
+        lo, hi = (int(x) for x in a.avg_seeds.split("-"))
+        seeds = list(range(lo, hi + 1))
+    else:
+        seeds = [a.seed]
+    res = None
+    for si, sd in enumerate(seeds):
+        run = make_runner(cfg, ds, a.device, sd)
+        r1 = run_all(run, cfg, a.device, M, agent,
+                     q_ekf=a.q_ekf, q_ukf=a.q_ukf,
+                     r_ekf=a.r_ekf, r_ukf=a.r_ukf, fme_N=a.fme_n,
+                     q_ekf_dist=a.q_ekf_dist if split_q else None,
+                     q_ukf_dist=a.q_ukf_dist if split_q else None,
+                     r_ekf_dist=a.r_ekf_dist if split_q else None,
+                     r_ukf_dist=a.r_ukf_dist if split_q else None)
+        if res is None:
+            res = {m: {k: (np.asarray(v, dtype=float) ** 2
+                           if k.startswith("evec") else
+                           np.asarray(v, dtype=float))
+                       for k, v in d.items()} for m, d in r1.items()}
+        else:
+            for m, d in r1.items():
+                for k, v in d.items():
+                    res[m][k] += (np.asarray(v, dtype=float) ** 2
+                                  if k.startswith("evec") else
+                                  np.asarray(v, dtype=float))
+    for m, d in res.items():
+        for k in d:
+            d[k] /= len(seeds)
+            if k.startswith("evec"):
+                d[k] = np.sqrt(d[k])          # per-step RMS error over seeds
+    if len(seeds) > 1:
+        print(f"[make_figs] curves averaged over {len(seeds)} seeds "
+              f"({seeds[0]}..{seeds[-1]})")
 
     def evec_for(m, scenario):
         """EKF/UKF use the disturbance-regime (Q,R) rollout in the wind/payload
@@ -205,9 +245,13 @@ def main():
                         bbox_inches="tight", dpi=150)
         plt.close(fig)
 
-        # ── fig3: adaptation, N_k over lambda_k ──
-        fig, ax = plt.subplots(2, 1, figsize=(a.width, 3.1), sharex=True,
-                               constrained_layout=True)
+        # ── fig3: adaptation, N_k over lambda_k (or N only) ──
+        nrows = 1 if a.no_lam else 2
+        fig, ax = plt.subplots(nrows, 1,
+                               figsize=(a.width, 2.2 if a.no_lam else 3.1),
+                               sharex=True, constrained_layout=True)
+        if nrows == 1:
+            ax = [ax]
         _bt = __import__('matplotlib.transforms',
                          fromlist=['x']).blended_transform_factory
         nc = moving_avg(N[idx].mean(0), cfg, 0.3)
@@ -220,15 +264,20 @@ def main():
         nlo, nhi = nc[k0:k1].min(), max(nc[k0:k1].max(), a.fme_n)
         ax[0].set_ylim(max(cfg.N_min - 2, nlo - 2), min(cfg.N_max, nhi + 2))
 
-        ax[1].plot(tk, moving_avg(L[idx].mean(0), cfg, 0.3), "-",
-                   color="k", lw=1.3)
-        ax[1].axhline(FME_LAM, ls="--", color=COLORS["FME"], lw=0.9)
-        ax[1].text(0.995, FME_LAM, f"FME $\\lambda{{=}}{FME_LAM:g}$",
-                   transform=_bt(ax[1].transAxes, ax[1].transData),
-                   ha="right", va="bottom", fontsize=6.5, color=COLORS["FME"])
-        ax[1].set_ylabel(r"$\lambda_k$")
-        ax[1].set_ylim(cfg.lam_min - 0.02, 1.0)
-        ax[1].set_xlabel("time step ($k$)")
+        if not a.no_lam:
+            ax[1].plot(tk, moving_avg(L[idx].mean(0), cfg, 0.3), "-",
+                       color="k", lw=1.3)
+        if not a.no_lam:
+            ax[1].axhline(FME_LAM, ls="--", color=COLORS["FME"], lw=0.9)
+        if not a.no_lam:
+            ax[1].text(0.995, FME_LAM, f"FME $\\lambda{{=}}{FME_LAM:g}$",
+                       transform=_bt(ax[1].transAxes, ax[1].transData),
+                       ha="right", va="bottom", fontsize=6.5,
+                       color=COLORS["FME"])
+        if not a.no_lam:
+            ax[1].set_ylabel(r"$\lambda_k$")
+            ax[1].set_ylim(cfg.lam_min - 0.02, 1.0)
+        ax[-1].set_xlabel("time step ($k$)")
 
         for A in ax:
             for (w0, w1) in wins_k:
