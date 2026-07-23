@@ -112,8 +112,10 @@ class Runner:
             return torch.cat(cols, dim=1)
         combos = None
         if oracle:
-            Ng = torch.tensor([8., 12., 16., 20.], device=self.dev)
-            Lg = torch.tensor([0.7, 0.85, 1.0], device=self.dev)
+            Ng = torch.tensor(getattr(cfg, "oracle_N_grid",
+                                       [8., 12., 16., 20.]), device=self.dev)
+            Lg = torch.tensor(getattr(cfg, "oracle_lam_grid",
+                                       [0.7, 0.85, 1.0]), device=self.dev)
             combos = [(n.item(), l.item()) for n in Ng for l in Lg]
 
         stride = max(1, cfg.uwb_stride)

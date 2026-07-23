@@ -59,8 +59,8 @@ class Config:
     ekf_R_sigma: float = 0.10           # practitioner datasheet σ [m] (< true 0.12~0.45)
     ekf_Q_scale: float = 0.40           # practitioner process-σ = ekf_Q_scale * q0 (~q0/2.5)
     # UWB anchors (DI-FME layout scaled to workspace)  [4,3]
-    anchors: tuple = ((1.0, 1.0, 0.0), (9.0, 1.0, 3.0),
-                      (9.0, 9.0, 0.0), (1.0, 9.0, 3.0))
+    anchors: tuple = ((1.0, 1.0, 0.0), (9.0, 1.0, 4.0),
+                      (9.0, 9.0, 0.0), (1.0, 9.0, 4.0))
     # GEOMETRY v13 (2026-07-20): upper pair 5 m -> 3 m for deployability
     # (UIFM-SLAC field setup: 0/3 m). The flight geometry was shrunk to match
     # (rlenv/synth.py _ref: R0 3.0 -> 2.5 with w 0.30 -> 0.36 so the cruise
@@ -83,7 +83,7 @@ class Config:
                                         # CALIBRATED process noise q0 the nominal N_opt≈14
                                         # (DI-FME choice) sits mid-range → real headroom.
     lam_min: float = 0.75   # v13.1: user retrain value (paper range [0.75, 1])
-    lam_fixed: float = -1.0  # >0 pins lambda to that CONSTANT (e.g. 0.85 =
+    lam_fixed: float = 0.85  # >0 pins lambda to that CONSTANT (e.g. 0.85 =
                              # baseline FME): the action's second dim becomes
                              # inert and AFME adapts N ONLY. Use this if the
                              # paper adopts the N-only formulation -- it removes
@@ -179,7 +179,7 @@ class Config:
                                         # False → legacy per-channel residual vector.
     n_obs_groups: int = 3               # UWB / attitude / gyro (3 groups, v9f_B-validated)
     obs_drop_gyro: bool = False          # exclude gyro group from observation
-    obs_group_scale: tuple = (1.192, 2.436, 19.180)
+    obs_group_scale: tuple = (1.222, 2.614, 19.425)   # 4 m anchors (final)
     # ^ v12 PRECISE re-estimation (2026-07-16): median whitened-innovation norm
     # per group, computed on the 8 nominal TRAIN trajectories of data_isaac_v12
     # (held-out set deliberately excluded -- no leakage) x 5 measurement-noise
