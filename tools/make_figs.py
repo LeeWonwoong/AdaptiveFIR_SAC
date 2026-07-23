@@ -33,7 +33,7 @@ plt.rcParams.update({
     "lines.linewidth": 0.9, "pdf.fonttype": 42,
 })
 
-from _common import (load_cfg, scenario_index, make_dataset,
+from _common import (DISPLAY, load_cfg, scenario_index, make_dataset,
                      load_agent, run_all_seeded, default_method_seeds,
                      SEED, FIG_PATTERN, select_pattern,
                      eval_slice, err_norm, moving_rms,
@@ -275,7 +275,8 @@ def main():
             ax.plot(tk, c, STYLE[m],
                     color="black" if m == "EKF" else COLORS[m],
                     lw=2.0 if m == "AFME" else 1.2,
-                    label=m + (" (proposed)" if m == "AFME" else ""))
+                    label=DISPLAY[m]
+                    + (" (proposed)" if m == "AFME" else ""))
         for (w0, w1) in wins_k:
             ax.axvspan(w0, w1, color=shade, alpha=0.12, zorder=0)
         _annotate(ax, wins_k, _lab, a.label_color, _sz, a.label_y)

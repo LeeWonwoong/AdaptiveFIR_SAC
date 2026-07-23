@@ -11,7 +11,7 @@ Emit the LaTeX RMSE table for one seed (same numbers as tools/eval_seeds.py).
 import argparse
 import numpy as np
 
-from _common import (load_cfg, scenario_index, make_dataset,
+from _common import (DISPLAY, load_cfg, scenario_index, make_dataset,
                      load_agent, run_all_seeded, default_method_seeds,
                      SEED, eval_slice, rmse3, METHODS,
                      EVAL_T0, EVAL_T1, Q_EKF, Q_UKF, Q_EKF_DIST, Q_UKF_DIST,
@@ -119,7 +119,8 @@ def main():
         r"\caption{" + cap + "}",
         r"\label{tab:rmse}",
         r"\begin{tabular}{lcccc}", r"\hline",
-        r"Scenario & EKF & UKF & FME & AFME \\", r"\hline",
+        r"Scenario & " + " & ".join(DISPLAY[m] for m in METHODS)
+        + r" \\", r"\hline",
         *body, r"\hline",
         r"Average & " + " & ".join(bold_min(avg)) + r" \\",
         r"\hline", r"\end{tabular}", r"\end{table}"])

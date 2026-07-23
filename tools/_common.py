@@ -66,6 +66,9 @@ PAYLOAD_WINDOWS = [(15.0, 33.0)]
 COLORS = {"EKF": "#d62728", "UKF": "#ff7f0e",
           "FME": "#1f77b4", "AFME": "#2ca02c"}
 METHODS = ["EKF", "UKF", "FME", "AFME"]
+# Paper display names -- internal keys (JSON, res dicts, SEED_* names) stay
+# "AFME" for compatibility; only rendered strings use the paper name.
+DISPLAY = {"EKF": "EKF", "UKF": "UKF", "FME": "FME", "AFME": "DRLA-FME"}
 
 # Figure pattern selection -- the time-series figures (make_figs) normally
 # draw the RMS across the three flight patterns of a scenario. Set this to
