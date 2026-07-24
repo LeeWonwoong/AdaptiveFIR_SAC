@@ -80,7 +80,7 @@ def build_scenario(a, rng):
                    else math.radians(a.wind_dir))
         sc["sustained"] = [
             {"speed": a.wind_speed, "vert_ratio": a.wind_vert,
-             "mod_amp": 0.20, "mod_period": 2.0, "mod_phase": 0.0,
+             "mod_amp": 0.10, "mod_period": 2.0, "mod_phase": 0.0,
              "ramp_s": 0.5,
              "dir_rad": dir_rad, "start_s": s, "duration_s": d}
             for (s, d) in parse_windows(a.windows)]

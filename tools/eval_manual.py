@@ -148,6 +148,39 @@ def main():
                    lw=1.8, label="AFME (proposed)")
         ax[0].axhline(FME_N, color=COLORS["FME"], ls="--", lw=1.3,
                       label=f"FME ($N{{=}}{FME_N}$)")
+        # sustained-wind takes: overlay the ACTUAL gust profile (ramp x
+        # modulation) so the horizon trace reads as envelope tracking --
+        # the shaded box marks the schedule, not the force.
+        _su = meta["scenario"].get("sustained")
+        if _su:
+            _su0 = _su[0] if isinstance(_su, list) else _su
+            import numpy as _np
+            _tt = _np.asarray(t)
+            _t0 = float(_su0.get("start_s", 0.0))
+            _du = float(_su0.get("duration_s", 0.0))
+            _rp = float(_su0.get("ramp_s", 0.0))
+            _env = _np.zeros_like(_tt)
+            _in = (_tt >= _t0) & (_tt <= _t0 + _du)
+            _rel = _tt - _t0
+            _env[_in] = 1.0
+            if _rp > 1e-6:
+                _ri = _in & (_rel < _rp)
+                _env[_ri] = 0.5 * (1 - _np.cos(_np.pi * _rel[_ri] / _rp))
+                _ro = _in & (_rel > _du - _rp)
+                _env[_ro] = 0.5 * (1 - _np.cos(
+                    _np.pi * (_du - _rel[_ro]) / _rp))
+            _am = float(_su0.get("mod_amp", 0.0))
+            _mod = 1.0 + _am * _np.sin(
+                2 * _np.pi * _rel / float(_su0.get("mod_period", 3.0))
+                + float(_su0.get("mod_phase", 0.0)))
+            _spd = float(_su0.get("speed", 0.0)) * _env * _mod
+            axw = ax[0].twinx()
+            axw.fill_between(_tt, 0, _spd, color="#d62728", alpha=0.12,
+                             lw=0)
+            axw.plot(_tt, _spd, color="#d62728", lw=0.8, alpha=0.55)
+            axw.set_ylabel("wind [m/s]", fontsize=7.5, color="#d62728")
+            axw.tick_params(labelsize=7, colors="#d62728")
+            axw.set_ylim(0, max(1.0, _spd.max() * 2.2))
         ax[1].plot(t, moving_avg(L[i], cfg, 0.3), color=COLORS["AFME"], lw=1.8)
         for (s0, s1, lab, _) in wins:
             ax[0].axvspan(s0, s1, color="#888", alpha=0.13)
@@ -155,7 +188,8 @@ def main():
         ax[0].set_title(title, fontsize=10.5, pad=22)
         ax[0].set_ylabel(r"$N_k$"); ax[1].set_ylabel(r"$\lambda_k$")
         ax[1].set_ylim(cfg.lam_min - 0.02, 1.0)
-        ax[1].set_xlabel("time [s]"); ax[1].set_xlim(EVAL_T0 + 1, t_end)
+        ax[1].set_xlabel("time [s]")
+        ax[1].set_xlim(EVAL_T0 + 1, t_end - 0.6)   # trim smoothing edge
         ax[0].grid(alpha=0.25); ax[1].grid(alpha=0.25)
         ax[0].legend(fontsize=7.5, ncol=2, frameon=False, loc="lower center",
                      bbox_to_anchor=(0.5, 1.0), borderaxespad=0.0)

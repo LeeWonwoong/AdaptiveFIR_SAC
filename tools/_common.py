@@ -75,7 +75,7 @@ DISPLAY = {"EKF": "EKF", "UKF": "UKF", "FME": "FME", "AFME": "DRLA-FME"}
 # one pattern name ("helical" / "figure8" / "waypoint") to draw that single
 # representative trajectory instead; None keeps the all-pattern RMS.
 # The CLI flag (--fig-pattern) still wins over this constant.
-FIG_PATTERN = "None"
+FIG_PATTERN = None
 
 
 # ------------------------------------------------------------------ set-up
@@ -109,7 +109,7 @@ def select_pattern(cfg, idx, pattern):
     `pattern` is the heldout_plan extra["pattern"] name ("helical",
     "figure8", "waypoint"); falsy -> `idx` unchanged (all-pattern RMS).
     """
-    if not pattern:
+    if not pattern or str(pattern).lower() == "none":
         return list(idx)
     sel = [i for i in idx
            if cfg.heldout_plan[i][4].get("pattern") == pattern]

@@ -456,10 +456,10 @@ class Config:
     # adaptation response) and bounded (<=30%) so the mean drag bias -- the
     # signal the horizon adapts to -- is preserved, while the time variation
     # gives the co-adapted forgetting factor a distinct graded-weighting role.
-    sustained_mod_amp_range: tuple = (0.15, 0.30)
+    sustained_mod_amp_range: tuple = (0.08, 0.15)   # fan-matched ripple
     sustained_mod_period_range: tuple = (2.0, 5.0)
     sustained_ramp_range: tuple = (1.0, 2.0)
-    heldout_mod_amp: float = 0.22
+    heldout_mod_amp: float = 0.12
     heldout_mod_period: float = 3.0
     heldout_ramp_s: float = 1.5
     # ^ v13: 9-15 so the 12 m/s held-out row sits at the CENTER of the
