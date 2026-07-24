@@ -363,21 +363,28 @@ class DatagenApp:
             #   (with dir=180 deg the gust pushes -x: downwind leg, no lateral
             #   correction), one gentle z arch 1.6 -> 2.0 -> 1.5 -> 1.7 so the
             #   vertical channel is exercised too.
-            lx0, lx1 = cx - 2.5, cx + 2.5
+            # v15.1: ANCHOR-DIAGONAL traverse (SW -> NE), UIFM-SLAC-style
+            # straight run. 1.2 m inset from the hard boundary keeps the
+            # 11.5 m/s modulated gust push inside the hull; the gentle z
+            # arch still exercises the vertical channel.
+            ins = 1.2
+            dx0, dy0 = x0 + ins, y0 + ins        # SW start
+            dx1, dy1 = x1 - ins, y1 - ins        # NE end
             mag = (1.00, 0.25, 0.85)
-            nwp = 22
+            nwp = 26
             wpath = []
             for k in range(nwp + 1):
-                s = k / nwp                       # 0 = east start, 1 = west end
-                xw = lx1 - 5.0 * s
+                s = k / nwp                      # 0 = SW start, 1 = NE end
                 zw = 1.7 + 0.3 * _m.sin(2 * _m.pi * s) - 0.1 * s
-                wpath.append((xw, cy, zw))
+                wpath.append((dx0 + s * (dx1 - dx0),
+                              dy0 + s * (dy1 - dy0), zw))
             _dotted_path("wind3d", wpath, mag)
-            _cube("wind_startpuck", (lx1, cy, wpath[0][2]),
-                  (0.11, 0.11, 0.11), (1.0, 1.0, 1.0))   # white = START (east)
+            _cube("wind_startpuck", (dx0, dy0, wpath[0][2]),
+                  (0.11, 0.11, 0.11), (1.0, 1.0, 1.0))   # white = START (SW)
+            _yaw = _m.degrees(_m.atan2(dy1 - dy0, dx1 - dx0))   # 45 deg
             for kf in (0.25, 0.5, 0.75):
                 q = wpath[int(kf * nwp)]
-                _chevron(f"winddir_{int(kf * 100)}", q, 180.0, mag)
+                _chevron(f"winddir_{int(kf * 100)}", q, _yaw, mag)
 
             # ── tilted overview camera ──
             import math as _math
