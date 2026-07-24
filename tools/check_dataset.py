@@ -25,6 +25,10 @@ def main():
     ap.add_argument("--split", default="both", choices=["train", "heldout", "both"])
     ap.add_argument("--margin", type=float, default=0.0,
                     help="required clearance inside the anchor square [m]")
+    ap.add_argument("--v-max", dest="v_max", type=float, default=2.5,
+                    help="horizontal speed gate [m/s]; v15 modulated gusts "
+                         "legitimately reach ~3.9 (peak ~18 m/s shove), so "
+                         "use 4.0 for v15-profile datasets")
     ap.add_argument("--z-margin", type=float, default=0.3,
                     help="required clearance below the anchor plane [m]")
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -59,7 +63,7 @@ def main():
                 issues.append(f"y {g[:, 1].min():.2f}~{g[:, 1].max():.2f}")
             if g[:, 2].max() > z_top:
                 issues.append(f"z max {g[:, 2].max():.2f}")
-            if hp.max() > 2.5:
+            if hp.max() > a.v_max:
                 issues.append(f"v max {hp.max():.2f}")
             name = os.path.basename(f)
             if issues:
