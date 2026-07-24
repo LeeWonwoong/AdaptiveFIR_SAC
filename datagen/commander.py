@@ -478,7 +478,12 @@ class Commander(Node):
                 self.get_logger().info(
                     f"  ✅ 시작점 정착 (d={float(np.linalg.norm(self.gt_pos - p0)):.2f} m)"
                     f" → FLY, 로깅 ON")
-                self.phase0 = 0.0
+                # KEEP the aligned phase0. Resetting it to 0.0 here (the old
+                # line) teleported the reference to the phase-0 point up to
+                # ~R0*2 away at the instant of FLY, producing a deterministic
+                # start dash (v_max ~3.6 helical / ~2.85 figure8) on every
+                # trajectory whose best phase != 0 -- the exact QC failure
+                # signature of the v15 regeneration.
                 self._terr_in, self._terr_out = [], []
                 self._clamp_warned = False
                 self._control("start_log")
