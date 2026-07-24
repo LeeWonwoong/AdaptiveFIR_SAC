@@ -173,10 +173,18 @@ def main():
                          [("EKF", a.seed_ekf), ("UKF", a.seed_ukf),
                           ("FME", a.seed_fme), ("AFME", a.seed_afme)]
                          if s is not None})
+    _cli_ms = {m: v for m, v in [("EKF", a.seed_ekf), ("UKF", a.seed_ukf),
+                                 ("FME", a.seed_fme), ("AFME", a.seed_afme)]
+               if v is not None}
     if a.avg_seeds:
-        if method_seeds:
+        # MC averaging: each realization uses ONE shared seed for all
+        # methods (paired streams within a realization). The SEED_* single-
+        # seed constants in _common only apply to single-seed renders, so
+        # they are ignored here; only EXPLICIT CLI per-method seeds clash.
+        if _cli_ms:
             ap.error("--seed-ekf/--seed-ukf/--seed-fme/--seed-afme are "
                      "single-seed options; drop --avg-seeds to use them")
+        method_seeds = {}
         lo, hi = (int(x) for x in a.avg_seeds.split("-"))
         seeds = list(range(lo, hi + 1))
     else:
